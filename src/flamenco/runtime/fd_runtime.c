@@ -3328,7 +3328,7 @@ fd_runtime_collect_rent_from_account( fd_exec_slot_ctx_t const * slot_ctx,
     return fd_runtime_collect_from_existing_account( slot_ctx, acc, key, epoch );
   } else {
     if( FD_UNLIKELY( acc->info.rent_epoch!=FD_RENT_EXEMPT_RENT_EPOCH &&
-                     fd_runtime_get_rent_due( slot_ctx, acc, epoch )==FD_RENT_EXEMPT ) ) {
+                     fd_runtime_get_rent_due( slot_ctx, acc, epoch ) )==FD_RENT_EXEMPT ) {
       acc->info.rent_epoch = ULONG_MAX;
     }
   }
