@@ -1243,6 +1243,11 @@ subtree_abandon( fd_sched_t * sched, fd_sched_block_t * block ) {
       sched->metrics->txn_abandoned_parsed_cnt += block->txn_parsed_cnt;
       sched->metrics->txn_abandoned_done_cnt   += block->txn_done_cnt;
 
+      /* If this block was the active block, clear the active pointer. */
+      if( FD_UNLIKELY( sched->active_bank_idx==(ulong)(block-sched->block_pool) ) ) {
+        sched->active_bank_idx = ULONG_MAX;
+      }
+
       /* Now release the staging lane. */
       //FIXME when demote supports non-empty blocks, we should demote
       //the block from the lane unconditionally and immediately,
@@ -1254,9 +1259,7 @@ subtree_abandon( fd_sched_t * sched, fd_sched_block_t * block ) {
         sched->staged_bitset = fd_ulong_clear_bit( sched->staged_bitset, (int)block->staging_lane );
         sched->staged_head_bank_idx[ block->staging_lane ] = ULONG_MAX;
       }
-    }
-
-    if( FD_UNLIKELY( block->staged && sched->active_bank_idx==sched->staged_head_bank_idx[ block->staging_lane ] ) ) {
+    } else if( FD_UNLIKELY( block->staged && sched->active_bank_idx==sched->staged_head_bank_idx[ block->staging_lane ] ) ) {
       /* Dying blocks should not be active. */
       sched->active_bank_idx = ULONG_MAX;
     }
