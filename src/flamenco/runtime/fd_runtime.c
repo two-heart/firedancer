@@ -1070,7 +1070,7 @@ fd_runtime_save_account( fd_funk_t *               funk,
   }
 
   /* Mix in the account hash into the bank hash */
-  FD_LOG_NOTICE(( "mix %p", (void*)account ));
+  FD_LOG_NOTICE(( "mix %p", (void*)fd_txn_account_get_meta( account ) ));
   fd_hashes_update_lthash( account, prev_hash, bank, NULL );
 
   /* Publish account update to replay tile for solcap writing

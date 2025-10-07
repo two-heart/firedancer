@@ -966,7 +966,7 @@ fd_executor_create_rollback_fee_payer_account( fd_exec_txn_ctx_t * txn_ctx,
     FD_LOG_NOTICE(( "init" )); 
     rollback_fee_payer_acc = txn_ctx->rollback_fee_payer_account;
   }
-  FD_LOG_NOTICE(( "set %p", (void*)rollback_fee_payer_acc  )); 
+  FD_LOG_NOTICE(( "set %p", (void*)rollback_fee_payer_acc->meta )); 
 
   /* Deduct the transaction fees from the rollback account. Because of prior checks, this should never fail. */
   if( FD_UNLIKELY( fd_txn_account_checked_sub_lamports( rollback_fee_payer_acc, total_fee ) ) ) {
