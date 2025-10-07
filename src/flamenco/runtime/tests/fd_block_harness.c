@@ -473,6 +473,7 @@ fd_runtime_fuzz_block_ctx_exec( fd_solfuzz_runner_t *      runner,
 
     /* Sequential transaction execution */
     for( ulong i=0UL; i<txn_cnt; i++ ) {
+      FD_LOG_NOTICE(( "--- BEGIN" ));
       fd_txn_p_t * txn = &txn_ptrs[i];
 
       /* Update the program cache */
@@ -480,7 +481,6 @@ fd_runtime_fuzz_block_ctx_exec( fd_solfuzz_runner_t *      runner,
 
       /* Execute the transaction against the runtime */
       res = FD_RUNTIME_EXECUTE_SUCCESS;
-      FD_LOG_NOTICE(( "--- BEGIN" ));
       fd_exec_txn_ctx_t * txn_ctx = fd_runtime_fuzz_txn_ctx_exec( runner, xid, txn, &res );
       txn_ctx->exec_err           = res;
 
