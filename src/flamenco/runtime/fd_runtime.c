@@ -1070,6 +1070,7 @@ fd_runtime_save_account( fd_funk_t *               funk,
   }
 
   /* Mix in the account hash into the bank hash */
+  FD_LOG_NOTICE(( "mix %p", (void*)account ));
   fd_hashes_update_lthash( account, prev_hash, bank, NULL );
 
   /* Publish account update to replay tile for solcap writing
@@ -1121,7 +1122,7 @@ fd_runtime_finalize_txn( fd_funk_t *               funk,
 
     /* Now, we must only save the fee payer if the nonce account was not the fee payer (because that was already saved above) */
     if( FD_LIKELY( txn_ctx->nonce_account_idx_in_txn!=FD_FEE_PAYER_TXN_IDX ) ) {
-      FD_LOG_NOTICE(( "saving %p %p", (void*)txn_ctx, (void*)txn_ctx->rollback_fee_payer_account));
+      FD_LOG_NOTICE(( "saving %p %p", (void*)txn_ctx, (void*)txn_ctx->rollback_fee_payer_account ));
       fd_runtime_save_account( funk, xid, txn_ctx->rollback_fee_payer_account, bank, txn_ctx->spad_wksp, capture_ctx );
     }
   } else {
