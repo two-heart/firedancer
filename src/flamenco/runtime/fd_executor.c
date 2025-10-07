@@ -953,6 +953,7 @@ fd_executor_create_rollback_fee_payer_account( fd_exec_txn_ctx_t * txn_ctx,
     void * fee_payer_data = fd_spad_alloc( txn_ctx->spad, FD_ACCOUNT_REC_ALIGN, sizeof(fd_account_meta_t) + data_len );
     FD_LOG_NOTICE(( "data_len %lu, meta_dlen %lu", data_len, (ulong)meta->dlen ));
     FD_LOG_NOTICE(( "lamports %lu", meta->lamports ));
+    if ( meta->lamports==0 ) FD_LOG_NOTICE(( "zero lamports" ));
     fd_memcpy( fee_payer_data, (uchar *)meta, sizeof(fd_account_meta_t) + data_len );
     if( FD_UNLIKELY( !fd_txn_account_join( fd_txn_account_new(
           txn_ctx->rollback_fee_payer_account,
