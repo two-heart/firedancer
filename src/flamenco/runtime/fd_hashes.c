@@ -15,6 +15,7 @@ fd_hashes_account_lthash( fd_pubkey_t const       * pubkey,
                           fd_lthash_value_t       * lthash_out ) {
   fd_lthash_zero( lthash_out );
 
+  FD_LOG_NOTICE(( "Update" ));
   /* Accounts with zero lamports are not included in the hash, so they should always be treated as zero */
   if( FD_UNLIKELY( account->lamports == 0 ) ) {
     return;

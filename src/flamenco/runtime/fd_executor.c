@@ -951,7 +951,6 @@ fd_executor_create_rollback_fee_payer_account( fd_exec_txn_ctx_t * txn_ctx,
 
     ulong  data_len       = fd_txn_account_get_data_len( &txn_ctx->accounts[FD_FEE_PAYER_TXN_IDX] );
     void * fee_payer_data = fd_spad_alloc( txn_ctx->spad, FD_ACCOUNT_REC_ALIGN, sizeof(fd_account_meta_t) + data_len );
-    FD_LOG_NOTICE(( "data_len: %lu, src_len: %lu", data_len, (ulong)meta->dlen )); 
     fd_memcpy( fee_payer_data, (uchar *)meta, sizeof(fd_account_meta_t) + data_len );
     if( FD_UNLIKELY( !fd_txn_account_join( fd_txn_account_new(
           txn_ctx->rollback_fee_payer_account,
@@ -961,8 +960,10 @@ fd_executor_create_rollback_fee_payer_account( fd_exec_txn_ctx_t * txn_ctx,
       FD_LOG_CRIT(( "Failed to join txn account" ));
     }
 
+    FD_LOG_NOTICE(( "init" )); 
     rollback_fee_payer_acc = txn_ctx->rollback_fee_payer_account;
   }
+  FD_LOG_NOTICE(( "set" )); 
 
   /* Deduct the transaction fees from the rollback account. Because of prior checks, this should never fail. */
   if( FD_UNLIKELY( fd_txn_account_checked_sub_lamports( rollback_fee_payer_acc, total_fee ) ) ) {
