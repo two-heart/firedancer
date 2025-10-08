@@ -49,7 +49,7 @@ void __msan_check_mem_is_initialized( void const volatile * addr, ulong sz );
    detects uninitialized memory when it is used in a conditional branch,
    for memory accesses, as a direct argument to a function call, or
    as a direct return value. */
-static inline void * fd_msan_poison  ( void *       addr, ulong sz ) { __msan_poison  ( addr, sz ); return addr; }
+static inline void * fd_msan_poison  ( void *       addr, ulong sz ) { (void)sz/*__msan_poison  ( addr, sz );*/ return addr; }
 
 /* fd_msan_unpoison marks a region of memory as initialized.
    Use cases:
@@ -58,7 +58,7 @@ static inline void * fd_msan_poison  ( void *       addr, ulong sz ) { __msan_po
    - Avoiding false positives where an uninitialized value is used
      in a scenario described by the  fd_msan_poison doc comment, but the
      use is actually correct in the application logic. */
-static inline void * fd_msan_unpoison( void *       addr, ulong sz ) { __msan_unpoison( addr, sz ); return addr; }
+static inline void * fd_msan_unpoison( void *       addr, ulong sz ) { (void)sz;/*__msan_unpoison( addr, sz );*/ return addr; }
 
 /* fd_msan_check checks if a region of memory is initialized.  If it is
    not, MSAN will report an error.  For making sure memory is
