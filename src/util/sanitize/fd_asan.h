@@ -94,12 +94,12 @@ void * __asan_region_is_poisoned    ( void *                addr, ulong sz );
 #ifdef FD_HAS_DEEPASAN_WATCH
 void fd_asan_check_watch( int poison, void * addr, ulong sz );
 void fd_asan_watch( void const * addr );
-static inline void * fd_asan_poison  ( void * addr, ulong sz ) { __asan_poison_memory_region  ( addr, sz ); fd_asan_check_watch( 1, addr, sz ); return addr; }
-static inline void * fd_asan_unpoison( void * addr, ulong sz ) { __asan_unpoison_memory_region( addr, sz ); fd_asan_check_watch( 0, addr, sz ); return addr; }
+static inline void * fd_asan_poison  ( void * addr, ulong sz ) { FD_LOG_NOTICE(( "poison %p", addr)); __asan_poison_memory_region  ( addr, sz ); fd_asan_check_watch( 1, addr, sz ); return addr; }
+static inline void * fd_asan_unpoison( void * addr, ulong sz ) { _FD_LOG_NOTICE(( "unpoison %p", addr));_asan_unpoison_memory_region( addr, sz ); fd_asan_check_watch( 0, addr, sz ); return addr; }
 
 #else
-static inline void * fd_asan_poison  ( void * addr, ulong sz ) { __asan_poison_memory_region  ( addr, sz ); return addr; }
-static inline void * fd_asan_unpoison( void * addr, ulong sz ) { __asan_unpoison_memory_region( addr, sz ); return addr; }
+static inline void * fd_asan_poison  ( void * addr, ulong sz ) { _FD_LOG_NOTICE(( "poison %p", addr));_asan_poison_memory_region  ( addr, sz ); return addr; }
+static inline void * fd_asan_unpoison( void * addr, ulong sz ) { _FD_LOG_NOTICE(( "unpoison %p", addr));_asan_unpoison_memory_region( addr, sz ); return addr; }
 #endif
 
 static inline int    fd_asan_test    ( void * addr           ) { return __asan_address_is_poisoned( addr );     }
