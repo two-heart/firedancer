@@ -1261,6 +1261,7 @@ fd_sbpf_lenient_elf_validate( fd_sbpf_elf_info_t * info,
     fd_elf64_shdr shdr = FD_LOAD( fd_elf64_shdr, bin + ehdr.e_shoff + i*sizeof(fd_elf64_shdr) );
 
     char name[ FD_SBPF_SECTION_NAME_SZ_MAX ];
+    fd_msan_unpoison( name, FD_SBPF_SECTION_NAME_SZ_MAX );
     int res = fd_sbpf_lenient_get_string_in_section( bin, bin_sz, &section_names_shdr, shdr.sh_name, FD_SBPF_SECTION_NAME_SZ_MAX, name );
     if( FD_UNLIKELY( res < 0 ) ) {
       /* this can never fail because it was checked above, but safer to keep it */
