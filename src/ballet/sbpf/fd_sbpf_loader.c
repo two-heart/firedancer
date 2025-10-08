@@ -259,6 +259,7 @@ fd_sbpf_lenient_get_string_in_section( void const *          elf_bytes,
 
   /* Write the string to the output buffer. */
   memcpy( out_str, (uchar const *)elf_bytes+string_range_start, string_range_end-string_range_start );
+  FD_LOG_NOTICE(( "out_str %p", out_str ));
   return FD_SBPF_ELF_SUCCESS;
 }
 
