@@ -1216,8 +1216,7 @@ fd_runtime_prepare_and_execute_txn( fd_banks_t *        banks,
                                     fd_spad_t *         exec_spad,
                                     fd_capture_ctx_t *  capture_ctx,
                                     uchar               do_sigverify ) {
-  FD_SPAD_FRAME_BEGIN( exec_spad ) {
-  FD_LOG_NOTICE(( "spad start"));
+  (void)exec_spad; /* Caller manages spad frame lifetime */
   int exec_res = 0;
 
   fd_bank_t * bank = fd_banks_bank_query( banks, bank_idx );
@@ -1250,7 +1249,6 @@ fd_runtime_prepare_and_execute_txn( fd_banks_t *        banks,
     exec_res = fd_executor_txn_verify( txn_ctx );
     if( FD_UNLIKELY( exec_res!=FD_RUNTIME_EXECUTE_SUCCESS ) ) {
       txn_ctx->flags = 0U;
-      FD_LOG_NOTICE(( "spad end"));
       return exec_res;
     }
   }
@@ -1268,11 +1266,7 @@ fd_runtime_prepare_and_execute_txn( fd_banks_t *        banks,
   if( FD_LIKELY( !( txn_ctx->flags & FD_TXN_P_FLAGS_FEES_ONLY ) ) ) {
     exec_res = fd_execute_txn( txn_ctx );
   }
-
-  FD_LOG_NOTICE(( "spad end"));
   return exec_res;
-
-  } FD_SPAD_FRAME_END;
 }
 
 /* fd_executor_txn_verify and fd_runtime_pre_execute_check are responisble
