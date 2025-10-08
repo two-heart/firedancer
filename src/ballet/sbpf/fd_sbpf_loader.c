@@ -233,7 +233,6 @@ fd_sbpf_lenient_get_string_in_section( void const *          elf_bytes,
                                        uint                  offset_in_section,
                                        ulong                 maximum_length,
                                        char *                out_str ) {
-  FD_LOG_NOTICE(( "fd_sbpf_lenient_get_string_in_section entry" ));
   /* This could be checked only once outside the loop, but to keep the code the same...
      https://github.com/anza-xyz/sbpf/blob/v0.12.2/src/elf_parser/mod.rs#L474-L476 */
   if( FD_UNLIKELY( section_header->sh_type!=FD_ELF_SHT_STRTAB ) ) {
@@ -260,7 +259,6 @@ fd_sbpf_lenient_get_string_in_section( void const *          elf_bytes,
 
   /* Write the string to the output buffer. */
   memcpy( out_str, (uchar const *)elf_bytes+string_range_start, string_range_end-string_range_start );
-  FD_LOG_HEXDUMP_NOTICE(( "out_str", out_str, string_range_end-string_range_start ));
   return FD_SBPF_ELF_SUCCESS;
 }
 
@@ -792,12 +790,6 @@ fd_sbpf_check_overlap( ulong a_start, ulong a_end, ulong b_start, ulong b_end ) 
   return !( ( a_end <= b_start || b_end <= a_start ) );
 }
 
-static inline void
-log_end( int * unused ) {
-  (void)unused;
-  FD_LOG_NOTICE(( "|x fd_sbpf_lenient_elf_parse end" ));
-}
-
 /* Mirrors Elf64::parse() in Agave. Returns an ElfParserError code on
    failure and 0 on success.
    https://github.com/anza-xyz/sbpf/blob/v0.12.2/src/elf_parser/mod.rs#L148 */
@@ -805,9 +797,6 @@ int
 fd_sbpf_lenient_elf_parse( fd_sbpf_elf_info_t * info,
                            void const *         bin,
                            ulong                bin_sz ) {
-  FD_LOG_NOTICE(( "|* fd_sbpf_lenient_elf_parse start" ));
-  __attribute__((cleanup(log_end))) int __dummy; \
-
 
   /* This documents the values that will be set in this function */
   info->bin_sz          = bin_sz;
@@ -1012,6 +1001,7 @@ fd_sbpf_lenient_elf_parse( fd_sbpf_elf_info_t * info,
       fd_elf64_shdr shdr = FD_LOAD( fd_elf64_shdr, bin + shdr_start + i*sizeof(fd_elf64_shdr) );
 
       char name[ FD_SBPF_SECTION_NAME_SZ_MAX ];
+      fd_msan_unpoison( name, FD_SBPF_SECTION_NAME_SZ_MAX );
       int res = fd_sbpf_lenient_get_string_in_section( bin, bin_sz, &section_names_shdr, shdr.sh_name, FD_SBPF_SECTION_NAME_SZ_MAX, name );
       if( FD_UNLIKELY( res < 0 ) ) {
         return res;
@@ -1031,7 +1021,6 @@ fd_sbpf_lenient_elf_parse( fd_sbpf_elf_info_t * info,
                 _ => {}
             }
         */
-      FD_LOG_NOTICE(( "right before" ));
       if(        fd_memeq( name, ".symtab", sizeof(".symtab") ) ) {
         if( FD_UNLIKELY( info->shndx_symtab != -1 ) ) {
           return FD_SBPF_ELF_PARSER_ERR_INVALID_SECTION_HEADER;
