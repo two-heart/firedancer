@@ -233,6 +233,7 @@ fd_sbpf_lenient_get_string_in_section( void const *          elf_bytes,
                                        uint                  offset_in_section,
                                        ulong                 maximum_length,
                                        char *                out_str ) {
+  FD_LOG_NOTICE(( "fd_sbpf_lenient_get_string_in_section entry" ));
   /* This could be checked only once outside the loop, but to keep the code the same...
      https://github.com/anza-xyz/sbpf/blob/v0.12.2/src/elf_parser/mod.rs#L474-L476 */
   if( FD_UNLIKELY( section_header->sh_type!=FD_ELF_SHT_STRTAB ) ) {
