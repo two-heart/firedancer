@@ -790,6 +790,12 @@ fd_sbpf_check_overlap( ulong a_start, ulong a_end, ulong b_start, ulong b_end ) 
   return !( ( a_end <= b_start || b_end <= a_start ) );
 }
 
+static inline void
+log_end( int * unused ) {
+  (void)unused;
+  FD_LOG_NOTICE(( "|x fd_sbpf_lenient_elf_parse end" ));
+}
+
 /* Mirrors Elf64::parse() in Agave. Returns an ElfParserError code on
    failure and 0 on success.
    https://github.com/anza-xyz/sbpf/blob/v0.12.2/src/elf_parser/mod.rs#L148 */
@@ -797,6 +803,9 @@ int
 fd_sbpf_lenient_elf_parse( fd_sbpf_elf_info_t * info,
                            void const *         bin,
                            ulong                bin_sz ) {
+  FD_LOG_NOTICE(( "|* fd_sbpf_lenient_elf_parse start" ));
+  __attribute__((cleanup(log_end))) int __dummy; \
+
 
   /* This documents the values that will be set in this function */
   info->bin_sz          = bin_sz;
@@ -1020,6 +1029,7 @@ fd_sbpf_lenient_elf_parse( fd_sbpf_elf_info_t * info,
                 _ => {}
             }
         */
+      FD_LOG_NOTICE(( "right before" ));
       if(        fd_memeq( name, ".symtab", sizeof(".symtab") ) ) {
         if( FD_UNLIKELY( info->shndx_symtab != -1 ) ) {
           return FD_SBPF_ELF_PARSER_ERR_INVALID_SECTION_HEADER;
