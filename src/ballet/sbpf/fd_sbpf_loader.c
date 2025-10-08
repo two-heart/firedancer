@@ -259,6 +259,7 @@ fd_sbpf_lenient_get_string_in_section( void const *          elf_bytes,
 
   /* Write the string to the output buffer. */
   memcpy( out_str, (uchar const *)elf_bytes+string_range_start, string_range_end-string_range_start );
+  FD_LOG_NOTICE(( "string_range_end-string_range_start %lu", string_range_end-string_range_start ));
   return FD_SBPF_ELF_SUCCESS;
 }
 
@@ -631,6 +632,7 @@ fd_sbpf_r_bpf_64_32( fd_sbpf_loader_t *              loader,
   /* Verify symbol name.
      https://github.com/anza-xyz/sbpf/blob/v0.12.2/src/elf.rs#L1261-L1263 */
   char name[ FD_SBPF_SYMBOL_NAME_SZ_MAX ];
+  fd_msan_unpoison( name, FD_SBPF_SYMBOL_NAME_SZ_MAX );
   if( FD_UNLIKELY( fd_sbpf_lenient_get_string_in_section( elf, elf_sz, dyn_section_names_shdr, symbol->st_name, FD_SBPF_SYMBOL_NAME_SZ_MAX, name ) ) ) {
     return FD_SBPF_ELF_ERR_UNKNOWN_SYMBOL;
   }
