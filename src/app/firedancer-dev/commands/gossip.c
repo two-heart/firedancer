@@ -789,6 +789,8 @@ gossip_cmd_fn( args_t *   args,
   ulong prev_net_rx_bytes = 0UL;
 
   for(;;) {
+    sleep( 1 );
+    continue;
 #define DIFFC(buf, METRIC) fmt_count( buf, gossip_metrics[ MIDX( COUNTER, GOSSIP, METRIC ) ] - gossip_prev[ MIDX( COUNTER, GOSSIP, METRIC ) ] )
 #define DIFFB(buf, METRIC) fmt_bytes( buf, gossip_metrics[ MIDX( COUNTER, GOSSIP, METRIC ) ] - gossip_prev[ MIDX( COUNTER, GOSSIP, METRIC ) ] )
 
