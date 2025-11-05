@@ -139,7 +139,6 @@ returnable_frag( fd_ipecho_tile_ctx_t * ctx,
 static void
 privileged_init( fd_topo_t *      topo,
                  fd_topo_tile_t * tile ) {
-  FD_LOG_NOTICE(( "Initializing ipecho tile '%s'", tile->name ));
   void * scratch = fd_topo_obj_laddr( topo, tile->tile_obj_id );
 
   FD_SCRATCH_ALLOC_INIT( l, scratch );
