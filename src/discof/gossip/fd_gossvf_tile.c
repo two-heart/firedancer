@@ -241,7 +241,6 @@ before_frag( fd_gossvf_tile_ctx_t * ctx,
              ulong                  in_idx,
              ulong                  seq,
              ulong                  sig ) {
-  FD_LOG_NOTICE(( "before_frag in_idx %lu seq %lu sig %lu shred_version %u", in_idx, seq, sig, ctx->shred_version ));
   if( FD_UNLIKELY( !ctx->shred_version && ctx->in[ in_idx ].kind!=IN_KIND_SHRED_VERSION ) ) return -1;
 
   switch( ctx->in[ in_idx ].kind ) {
@@ -273,6 +272,7 @@ during_frag( fd_gossvf_tile_ctx_t * ctx,
       break;
     }
     case IN_KIND_NET: {
+      FD_LOG_NOTICE(( "received net packet of size %lu", sz ));
       uchar * src = fd_chunk_to_laddr( ctx->in[ in_idx ].mem, chunk );
       fd_memcpy( ctx->payload, src, sz );
       break;
