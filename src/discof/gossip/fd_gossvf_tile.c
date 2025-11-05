@@ -245,7 +245,9 @@ before_frag( fd_gossvf_tile_ctx_t * ctx,
 
   switch( ctx->in[ in_idx ].kind ) {
     case IN_KIND_SHRED_VERSION: return 0;
-    case IN_KIND_NET: return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx;
+    case IN_KIND_NET:
+      FD_LOG_NOTICE(( "before_frag net seq %lu sig %lu rr_idx %lu rr_cnt %lu", seq, sig, ctx->round_robin_idx, ctx->round_robin_cnt ));
+      return (seq % ctx->round_robin_cnt) != ctx->round_robin_idx;
     case IN_KIND_REPLAY: return 0;
     case IN_KIND_PINGS: return 0;
     case IN_KIND_GOSSIP: return sig!=FD_GOSSIP_UPDATE_TAG_CONTACT_INFO &&
@@ -272,7 +274,6 @@ during_frag( fd_gossvf_tile_ctx_t * ctx,
       break;
     }
     case IN_KIND_NET: {
-      FD_LOG_NOTICE(( "received net packet of size %lu", sz ));
       uchar * src = fd_chunk_to_laddr( ctx->in[ in_idx ].mem, chunk );
       fd_memcpy( ctx->payload, src, sz );
       break;
