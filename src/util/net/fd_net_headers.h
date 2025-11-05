@@ -4,6 +4,7 @@
 #include "fd_ip4.h"
 #include "fd_udp.h"
 #include "fd_eth.h"
+#include "../log/fd_log.h"
 
 /* fd_ip4_udp_hdrs is useful to construct Ethernet+IPv4+UDP network
    headers. Assumes that the IPv4 header has no options (IHL=5). */
@@ -88,7 +89,7 @@ fd_ip4_udp_hdr_strip( uchar const *         data,
   fd_eth_hdr_t const * eth = (fd_eth_hdr_t const *)data;
   fd_ip4_hdr_t const * ip4 = (fd_ip4_hdr_t const *)( (ulong)eth + sizeof(fd_eth_hdr_t) );
   if ( FD_UNLIKELY( !fd_ip4_addr_is_public(ip4->saddr) ) ) {
-    FD_LOG_HEXDUMP_NOTICE(( "received packet", data, data_sz ));
+    FD_LOG_HEXDUMP_WARNING(( "received packet:", data, data_sz ));
   }
   fd_udp_hdr_t const * udp = (fd_udp_hdr_t const *)( (ulong)ip4 + FD_IP4_GET_LEN( *ip4 ) );
 
