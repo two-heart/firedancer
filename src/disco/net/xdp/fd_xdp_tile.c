@@ -959,25 +959,32 @@ net_rx_packet( fd_net_ctx_t * ctx,
   ushort proto;
   fd_net_out_ctx_t * out;
   if(      FD_UNLIKELY( udp_dstport==ctx->shred_listen_port ) ) {
+    FD_LOG_NOTICE(( "sending to shred" ));
     proto = DST_PROTO_SHRED;
     out = ctx->shred_out;
   } else if( FD_UNLIKELY( udp_dstport==ctx->quic_transaction_listen_port ) ) {
+    FD_LOG_NOTICE(( "sending to quic" ));
     proto = DST_PROTO_TPU_QUIC;
     out = ctx->quic_out;
   } else if( FD_UNLIKELY( udp_dstport==ctx->legacy_transaction_listen_port ) ) {
+    FD_LOG_NOTICE(( "sending to legacy txn" ));
     proto = DST_PROTO_TPU_UDP;
     out = ctx->quic_out;
   } else if( FD_UNLIKELY( udp_dstport==ctx->gossip_listen_port ) ) {
+    FD_LOG_NOTICE(( "sending to gossip" ));
     proto = DST_PROTO_GOSSIP;
     out = ctx->gossvf_out;
   } else if( FD_UNLIKELY( udp_dstport==ctx->repair_intake_listen_port ) ) {
+    FD_LOG_NOTICE(( "sending to repair listen" ));
     proto = DST_PROTO_REPAIR;
     if( FD_UNLIKELY( sz == REPAIR_PING_SZ ) ) out = ctx->repair_out; /* ping-pong */
     else                                      out = ctx->shred_out;
   } else if( FD_UNLIKELY( udp_dstport==ctx->repair_serve_listen_port ) ) {
+    FD_LOG_NOTICE(( "sending to repair serve" ));
     proto = DST_PROTO_REPAIR;
     out = ctx->repair_out;
   } else if( FD_UNLIKELY( udp_dstport==ctx->send_src_port ) ) {
+    FD_LOG_NOTICE(( "sending to send" ));
     proto = DST_PROTO_SEND;
     out = ctx->send_out;
   } else {
