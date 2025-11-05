@@ -1064,12 +1064,12 @@ static void
 net_rx_event( fd_net_ctx_t * ctx,
               fd_xsk_t *     xsk,
               uint           rx_seq ) {
-  FD_LOG_NOTICE(( "net_rx_event called rx_seq=%u", rx_seq ));
   /* Locate the incoming frame */
 
   fd_xdp_ring_t * rx_ring = &xsk->ring_rx;
   uint            rx_mask = rx_ring->depth - 1U;
   struct xdp_desc frame   = FD_VOLATILE_CONST( rx_ring->packet_ring[ rx_seq&rx_mask ] );
+  FD_LOG_NOTICE(( "net_rx_event called rx_seq=%u " FD_IP4_ADDR_FMT , rx_seq,  FD_IP4_ADDR_FMT_ARGS( (uint)frame.addr ) ));
 
   if( FD_UNLIKELY( frame.len>FD_NET_MTU ) )
     FD_LOG_ERR(( "received a UDP packet with a too large payload (%u)", frame.len ));
