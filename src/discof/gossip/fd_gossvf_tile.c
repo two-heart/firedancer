@@ -242,7 +242,7 @@ before_frag( fd_gossvf_tile_ctx_t * ctx,
              ulong                  seq,
              ulong                  sig ) {
   if( FD_UNLIKELY( !ctx->shred_version && ctx->in[ in_idx ].kind!=IN_KIND_SHRED_VERSION ) ) return -1;
-
+  FD_LOG_NOTICE(( "before_frag in_idx %lu kind %d seq %lu sig %lu", in_idx, ctx->in[ in_idx ].kind, seq, sig ));
   switch( ctx->in[ in_idx ].kind ) {
     case IN_KIND_SHRED_VERSION: return 0;
     case IN_KIND_NET:
