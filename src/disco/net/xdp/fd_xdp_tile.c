@@ -886,6 +886,7 @@ net_rx_packet( fd_net_ctx_t * ctx,
                ulong          sz,
                uint *         freed_chunk ) {
 
+  FD_LOG_NOTICE(( "net_rx_packet called with umem_off %lu sz %lu", umem_off, sz ));
   if( FD_UNLIKELY( sz<sizeof(fd_eth_hdr_t)+sizeof(fd_ip4_hdr_t)+sizeof(fd_udp_hdr_t) ) ) {
     FD_DTRACE_PROBE( net_tile_err_rx_undersz );
     ctx->metrics.rx_undersz_cnt++;
