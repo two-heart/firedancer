@@ -1069,7 +1069,7 @@ net_rx_event( fd_net_ctx_t * ctx,
   fd_xdp_ring_t * rx_ring = &xsk->ring_rx;
   uint            rx_mask = rx_ring->depth - 1U;
   struct xdp_desc frame   = FD_VOLATILE_CONST( rx_ring->packet_ring[ rx_seq&rx_mask ] );
-  FD_LOG_NOTICE(( "net_rx_event called rx_seq=%u %lu" FD_IP4_ADDR_FMT , rx_seq, (ulong)frame.addr,  FD_IP4_ADDR_FMT_ARGS( (uint)frame.addr ) ));
+  FD_LOG_NOTICE(( "net_rx_event called rx_seq=%u %lu " FD_IP4_ADDR_FMT , rx_seq, (ulong)frame.addr,  FD_IP4_ADDR_FMT_ARGS( fd_bswap((uint)frame.addr)) ));
 
   if( FD_UNLIKELY( frame.len>FD_NET_MTU ) )
     FD_LOG_ERR(( "received a UDP packet with a too large payload (%u)", frame.len ));
