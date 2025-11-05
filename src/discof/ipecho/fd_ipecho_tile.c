@@ -139,6 +139,7 @@ returnable_frag( fd_ipecho_tile_ctx_t * ctx,
 static void
 privileged_init( fd_topo_t *      topo,
                  fd_topo_tile_t * tile ) {
+  FD_LOG_NOTICE(( "Initializing ipecho tile '%s'", tile->name ));
   void * scratch = fd_topo_obj_laddr( topo, tile->tile_obj_id );
 
   FD_SCRATCH_ALLOC_INIT( l, scratch );
@@ -179,15 +180,20 @@ unprivileged_init( fd_topo_t *      topo,
 
   FD_MGAUGE_SET( IPECHO, SHRED_VERSION, tile->ipecho.expected_shred_version );
 
-  /* In some topologies (e.g. firedancer-dev gossip), the ipecho tile
-     has no input links. Guard against dereferencing a missing
-     link/dcache. */
+  /* In some topologies (e.g. firedancer-dev gossip), the ipecho tile has
+     no input links. Guard against dereferencing a missing link/dcache. */
   if( FD_LIKELY( tile->in_cnt>0UL ) ) {
     ulong link_id = tile->in_link_id[ 0UL ];
     void * dcache = topo->links[ link_id ].dcache;
-    ctx->genesi_in_mem    = topo->workspaces[ topo->objs[ topo->links[ link_id ].dcache_obj_id ].wksp_id ].wksp;
-    ctx->genesi_in_chunk0 = fd_dcache_compact_chunk0( ctx->genesi_in_mem, dcache );
-    ctx->genesi_in_wmark  = fd_dcache_compact_wmark ( ctx->genesi_in_mem, dcache, topo->links[ link_id ].mtu );
+    if( FD_LIKELY( dcache ) ) {
+      ctx->genesi_in_mem    = topo->workspaces[ topo->objs[ topo->links[ link_id ].dcache_obj_id ].wksp_id ].wksp;
+      ctx->genesi_in_chunk0 = fd_dcache_compact_chunk0( ctx->genesi_in_mem, dcache );
+      ctx->genesi_in_wmark  = fd_dcache_compact_wmark ( ctx->genesi_in_mem, dcache, topo->links[ link_id ].mtu );
+    } else {
+      ctx->genesi_in_mem    = NULL;
+      ctx->genesi_in_chunk0 = 0UL;
+      ctx->genesi_in_wmark  = 0UL;
+    }
   } else {
     ctx->genesi_in_mem    = NULL;
     ctx->genesi_in_chunk0 = 0UL;
