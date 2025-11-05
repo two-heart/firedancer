@@ -894,7 +894,6 @@ net_rx_packet( fd_net_ctx_t * ctx,
 
   if( FD_UNLIKELY( sz<sizeof(fd_eth_hdr_t)+sizeof(fd_ip4_hdr_t)+sizeof(fd_udp_hdr_t) ) ) {
     FD_DTRACE_PROBE( net_tile_err_rx_undersz );
-    FD_LOG_NOTICE(( "Received undersized packet of size %lu bytes", sz ));
     ctx->metrics.rx_undersz_cnt++;
     return;
   }
@@ -953,6 +952,7 @@ net_rx_packet( fd_net_ctx_t * ctx,
     return;
   }
 
+  FD_LOG_NOTICE(( "Received UDP packet of size %lu bytes", sz ));
   /* Extract IP dest addr and UDP src/dest port */
   fd_udp_hdr_t * udp_hdr = (fd_udp_hdr_t *)udp;
   uint ip_srcaddr        = iphdr->saddr;
