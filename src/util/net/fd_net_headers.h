@@ -88,9 +88,6 @@ fd_ip4_udp_hdr_strip( uchar const *         data,
                       fd_udp_hdr_t ** const opt_udp ) {
   fd_eth_hdr_t const * eth = (fd_eth_hdr_t const *)data;
   fd_ip4_hdr_t const * ip4 = (fd_ip4_hdr_t const *)( (ulong)eth + sizeof(fd_eth_hdr_t) );
-  if ( FD_UNLIKELY( !fd_ip4_addr_is_public(ip4->saddr) ) ) {
-    FD_LOG_HEXDUMP_WARNING(( "received packet:", data, data_sz ));
-  }
   fd_udp_hdr_t const * udp = (fd_udp_hdr_t const *)( (ulong)ip4 + FD_IP4_GET_LEN( *ip4 ) );
 
   /* data_sz is less than the observed combined header size */
