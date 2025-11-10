@@ -1486,6 +1486,7 @@ unprivileged_init( fd_topo_t *      topo,
   } else if( FD_UNLIKELY( ctx->send_src_port!=0 && ctx->send_out->mcache==NULL ) ) {
     FD_LOG_ERR(( "send listen port set but no out link was found" ));
   }
+  FD_LOG_NOTICE(( "gossip listen port: %hu", ctx->gossip_listen_port ));
 
   for( uint j=0U; j<2U; j++ ) {
     ctx->tx_flusher[ j ].pending_wmark         = (ulong)( (double)tile->xdp.xdp_tx_queue_size * 0.7 );
