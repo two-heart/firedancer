@@ -1,10 +1,8 @@
 #ifndef HEADER_fd_src_util_net_fd_net_headers_h
 #define HEADER_fd_src_util_net_fd_net_headers_h
 
-#include "fd_ip4.h"
 #include "fd_udp.h"
 #include "fd_eth.h"
-#include "../log/fd_log.h"
 
 /* fd_ip4_udp_hdrs is useful to construct Ethernet+IPv4+UDP network
    headers. Assumes that the IPv4 header has no options (IHL=5). */
