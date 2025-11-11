@@ -31,7 +31,7 @@
 
 #else
 
-#define FD_DTRACE_PROBE(name) FD_LOG_NOTICE(( "DTRACE_PROBE(%s)", #name ))
+#define FD_DTRACE_PROBE(name)
 #define FD_DTRACE_PROBE_1(name,a1)             (void)((a1));
 #define FD_DTRACE_PROBE_2(name,a1,a2)          (void)((a1)); (void)((a2));
 #define FD_DTRACE_PROBE_3(name,a1,a2,a3)       (void)((a1)); (void)((a2)); (void)((a3));
