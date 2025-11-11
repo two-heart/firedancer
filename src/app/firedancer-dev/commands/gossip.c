@@ -41,7 +41,6 @@ gossip_cmd_topo( config_t * config ) {
   for( ulong i=0UL; i<net_tile_cnt; i++ ) fd_topos_net_tile_finish( topo, i );
   fd_topob_auto_layout( topo, 0 );
   fd_topob_finish( topo, CALLBACKS );
-  fd_topo_print_log( 0, &config->topo );
 }
 
 void
