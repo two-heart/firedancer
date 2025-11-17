@@ -935,26 +935,26 @@ fd_banks_advance_root_prepare( fd_banks_t * banks,
      refcnts to determine which bank is the highest advanceable. */
 
   fd_bank_t * bank_pool = fd_banks_get_bank_pool( banks );
-  fd_rwlock_read( &banks->rwlock );
+  fd_rwlock_write( &banks->rwlock );
 
   fd_bank_t * root = fd_banks_root( banks );
   if( FD_UNLIKELY( !root ) ) {
     FD_LOG_WARNING(( "failed to get root bank" ));
-    fd_rwlock_unread( &banks->rwlock );
+    fd_rwlock_unwrite( &banks->rwlock );
     return 0;
   }
 
   /* Early exit if target is the same as the old root. */
   if( FD_UNLIKELY( root->idx==target_bank_idx ) ) {
     FD_LOG_WARNING(( "target bank_idx %lu is the same as the old root's bank index %lu", target_bank_idx, root->idx ));
-    fd_rwlock_unread( &banks->rwlock );
+    fd_rwlock_unwrite( &banks->rwlock );
     return 0;
   }
 
   /* Early exit if the root bank still has a reference to it, we can't
      advance from it unti it's released. */
   if( FD_UNLIKELY( root->refcnt!=0UL ) ) {
-    fd_rwlock_unread( &banks->rwlock );
+    fd_rwlock_unwrite( &banks->rwlock );
     return 0;
   }
 
@@ -1013,7 +1013,7 @@ fd_banks_advance_root_prepare( fd_banks_t * banks,
     fd_bank_t * child_bank = fd_banks_pool_ele( bank_pool, child_idx );
     if( child_idx!=advance_candidate_idx ) {
       if( !fd_banks_subtree_can_be_pruned( bank_pool, child_bank ) ) {
-        fd_rwlock_unread( &banks->rwlock );
+        fd_rwlock_unwrite( &banks->rwlock );
         return 0;
       }
     }
@@ -1021,7 +1021,7 @@ fd_banks_advance_root_prepare( fd_banks_t * banks,
   }
 
   *advanceable_bank_idx_out = advance_candidate_idx;
-  fd_rwlock_unread( &banks->rwlock );
+  fd_rwlock_unwrite( &banks->rwlock );
   return 1;
 }
 
@@ -1138,26 +1138,27 @@ int
 fd_banks_validate( fd_banks_t * banks ) {
   fd_rwlock_read( &banks->rwlock );
 
-  fd_bank_t * bank_pool = fd_banks_get_bank_pool( banks );
+  fd_bank_t * banks_pool = fd_banks_get_bank_pool( banks );
 
-  FD_LOG_INFO(( "fd_banks_pool_free: %lu", fd_banks_pool_free( bank_pool ) ));
+  FD_LOG_INFO(( "fd_banks_pool_free: %lu", fd_banks_pool_free( banks_pool ) ));
 
   /* First check that the number of elements acquired by the CoW pools
      is not greater than the number of elements in the bank pool. */
-  #define HAS_COW_1(type, name, footprint)                                                                                                                                                      \
-  fd_bank_##name##_t * name##_pool = fd_bank_get_##name##_pool( bank );                                                                                                                         \
-  FD_LOG_NOTICE(( "%s pool used: %lu", #name, fd_bank_##name##_pool_used( name##_pool ) ));                                                                                                     \
-  if( fd_bank_##name##_pool_used( name##_pool ) > fd_bank_pool_used( bank_pool ) ) {                                                                                                            \
-    FD_LOG_WARNING(( "Invariant violation: %s pool has more elements acquired than the bank pool %lu %lu", #name, fd_bank_##name##_pool_used( name##_pool ), fd_bank_pool_used( bank_pool ) )); \
-    fd_rwlock_unread( &banks->rwlock );                                                                                                                                                         \
-    return 1;                                                                                                                                                                                   \
-  }                                                                                                                                                                                             \
+  #define HAS_COW_1(type, name, footprint)                                                                                                                                                        \
+  fd_bank_##name##_t * name##_pool = fd_banks_get_##name##_pool( banks );                                                                                                                           \
+  if( fd_bank_##name##_pool_used( name##_pool ) > fd_banks_pool_used( banks_pool ) ) {                                                                                                            \
+    FD_LOG_WARNING(( "Invariant violation: %s pool has more elements acquired than the banks pool %lu %lu", #name, fd_bank_##name##_pool_used( name##_pool ), fd_banks_pool_used( banks_pool ) )); \
+    fd_rwlock_unread( &banks->rwlock );                                                                                                                                                           \
+    return 1;                                                                                                                                                                                     \
+  }                                                                                                                                                                                               \
 
   #define HAS_COW_0(type, name, footprint)
 
   #define X(type, name, footprint, align, cow, limit_fork_width, has_lock) \
-    HAS_COW_##cow(type, name, footprint)                                   \
+    HAS_COW_##cow(type, name, footprint)
+
   FD_BANKS_ITER(X)
+
   #undef X
   #undef HAS_COW_0
   #undef HAS_COW_1
