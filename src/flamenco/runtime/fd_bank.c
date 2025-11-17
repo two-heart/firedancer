@@ -1146,6 +1146,7 @@ fd_banks_validate( fd_banks_t * banks ) {
      is not greater than the number of elements in the bank pool. */
   #define HAS_COW_1(type, name, footprint)                                                                                                                                                      \
   fd_bank_##name##_t * name##_pool = fd_bank_get_##name##_pool( bank );                                                                                                                         \
+  FD_LOG_NOTICE(( "%s pool used: %lu", #name, fd_bank_##name##_pool_used( name##_pool ) ));                                                                                                     \
   if( fd_bank_##name##_pool_used( name##_pool ) > fd_bank_pool_used( bank_pool ) ) {                                                                                                            \
     FD_LOG_WARNING(( "Invariant violation: %s pool has more elements acquired than the bank pool %lu %lu", #name, fd_bank_##name##_pool_used( name##_pool ), fd_bank_pool_used( bank_pool ) )); \
     fd_rwlock_unread( &banks->rwlock );                                                                                                                                                         \
