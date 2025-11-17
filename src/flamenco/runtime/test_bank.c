@@ -284,7 +284,9 @@ main( int argc, char ** argv ) {
   /* Init banks */
 
   fd_banks_t * banks = fd_banks_join( mem );
+
   FD_TEST( banks );
+  FD_TEST( 0==fd_banks_validate( banks ) );
 
   fd_bank_t * bank = fd_banks_init_bank( banks );
   fd_bank_slot_set( bank, 1UL );
