@@ -50,7 +50,24 @@ typedef struct {
   uchar              active[ FUZZ_MAX_LIVE_SLOTS ];
   ushort             parent[ FUZZ_MAX_LIVE_SLOTS ];
   uchar              key[ FUZZ_KEY_CNT ][ 32UL ];
+  uchar              touched_key[ FUZZ_KEY_CNT ];
 } fuzz_env_t;
+
+static fuzz_env_t fuzz_env[ 1 ];
+static int        fuzz_env_inited;
+
+static void
+fuzz_cleanup( void ) {
+  if( FD_LIKELY( fuzz_env->fd>=0 ) ) {
+    close( fuzz_env->fd );
+    fuzz_env->fd = -1;
+  }
+  free( fuzz_env->accdb_mem );
+  free( fuzz_env->shmem_mem );
+  fuzz_env->accdb_mem = NULL;
+  fuzz_env->shmem_mem = NULL;
+  fd_halt();
+}
 
 static uchar
 fuzz_u8( fuzz_cursor_t * cur ) {
@@ -119,6 +136,7 @@ fuzz_model_reset( fuzz_env_t * env ) {
     env->active[ i ] = 0U;
     env->parent[ i ] = USHORT_MAX;
   }
+  memset( env->touched_key, 0, sizeof(env->touched_key) );
 }
 
 static void
@@ -195,8 +213,8 @@ fuzz_pick_active( fuzz_env_t const * env,
   ulong pick = fuzz_bounded( cur, cnt );
 
   for( ulong i=0UL; i<FUZZ_MAX_LIVE_SLOTS; i++ ) {
-    if( !env->active[ i ] ) continue;
-    if( !pick-- ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
+    if( FD_UNLIKELY( !env->active[ i ] ) ) continue;
+    if( FD_UNLIKELY( !pick-- ) ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
   }
   FD_LOG_ERR(( "unreachable" ));
 }
@@ -211,8 +229,8 @@ fuzz_pick_leaf( fuzz_env_t const * env,
   FD_TEST( cnt );
   ulong pick = fuzz_bounded( cur, cnt );
   for( ulong i=0UL; i<FUZZ_MAX_LIVE_SLOTS; i++ ) {
-    if( !env->active[ i ] || fuzz_has_child( env, (ushort)i ) ) continue;
-    if( !pick-- ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
+    if( FD_UNLIKELY( !env->active[ i ] || fuzz_has_child( env, (ushort)i ) ) ) continue;
+    if( FD_UNLIKELY( !pick-- ) ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
   }
   FD_LOG_ERR(( "unreachable" ));
 }
@@ -227,8 +245,8 @@ fuzz_pick_nonroot( fuzz_env_t const * env,
 
   ulong pick = fuzz_bounded( cur, cnt );
   for( ulong i=0UL; i<FUZZ_MAX_LIVE_SLOTS; i++ ) {
-    if( !env->active[ i ] || i==(ulong)env->root.val ) continue;
-    if( !pick-- ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
+    if( FD_UNLIKELY( !env->active[ i ] || i==(ulong)env->root.val ) ) continue;
+    if( FD_UNLIKELY( !pick-- ) ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
   }
   FD_LOG_ERR(( "unreachable" ));
 }
@@ -244,9 +262,9 @@ fuzz_pick_nonroot_leaf( fuzz_env_t const * env,
 
   ulong pick = fuzz_bounded( cur, cnt );
   for( ulong i=0UL; i<FUZZ_MAX_LIVE_SLOTS; i++ ) {
-    if( !env->active[ i ] || i==(ulong)env->root.val ||
-        fuzz_has_child( env, (ushort)i ) ) continue;
-    if( !pick-- ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
+    if( FD_UNLIKELY( !env->active[ i ] || i==(ulong)env->root.val ||
+                     fuzz_has_child( env, (ushort)i ) ) ) continue;
+    if( FD_UNLIKELY( !pick-- ) ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
   }
   FD_LOG_ERR(( "unreachable" ));
 }
@@ -261,8 +279,8 @@ fuzz_pick_root_child( fuzz_env_t const * env,
 
   ulong pick = fuzz_bounded( cur, cnt );
   for( ulong i=0UL; i<FUZZ_MAX_LIVE_SLOTS; i++ ) {
-    if( !env->active[ i ] || env->parent[ i ]!=env->root.val ) continue;
-    if( !pick-- ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
+    if( FD_UNLIKELY( !env->active[ i ] || env->parent[ i ]!=env->root.val ) ) continue;
+    if( FD_UNLIKELY( !pick-- ) ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
   }
   FD_LOG_ERR(( "unreachable" ));
 }
@@ -312,7 +330,9 @@ fuzz_drain_cmd( fuzz_env_t * env ) {
 }
 
 static void
-fuzz_setup( fuzz_env_t * env ) {
+fuzz_env_init_once( fuzz_env_t * env ) {
+  if( FD_LIKELY( fuzz_env_inited ) ) return;
+
   memset( env, 0, sizeof(fuzz_env_t) );
   env->fd = -1;
 
@@ -329,6 +349,22 @@ fuzz_setup( fuzz_env_t * env ) {
                                                      fd_accdb_shmem_align() ) );
   FD_TEST( env->shmem_mem );
 
+  ulong accdb_fp = fd_accdb_footprint( FUZZ_MAX_LIVE_SLOTS );
+  FD_TEST( accdb_fp );
+  env->accdb_mem = aligned_alloc( fd_accdb_align(),
+                                  FD_ULONG_ALIGN_UP( accdb_fp,
+                                                     fd_accdb_align() ) );
+  FD_TEST( env->accdb_mem );
+
+  for( ulong i=0UL; i<FUZZ_KEY_CNT; i++ ) fuzz_key_init( env->key[ i ], i );
+
+  fuzz_env_inited = 1;
+}
+
+static void
+fuzz_setup( fuzz_env_t * env ) {
+  fuzz_env_init_once( env );
+
   env->shmem = fd_accdb_shmem_join( fd_accdb_shmem_new(
       env->shmem_mem, FUZZ_MAX_ACCOUNTS, FUZZ_MAX_LIVE_SLOTS,
       FUZZ_MAX_ACCOUNT_WRITES_PER_SLOT, FUZZ_PARTITION_CNT,
@@ -336,12 +372,6 @@ fuzz_setup( fuzz_env_t * env ) {
       0, 0xf17eda2ce7accdb0UL, 1UL ) );
   FD_TEST( env->shmem );
 
-  ulong accdb_fp = fd_accdb_footprint( FUZZ_MAX_LIVE_SLOTS );
-  FD_TEST( accdb_fp );
-  env->accdb_mem = aligned_alloc( fd_accdb_align(),
-                                  FD_ULONG_ALIGN_UP( accdb_fp,
-                                                     fd_accdb_align() ) );
-  FD_TEST( env->accdb_mem );
   env->accdb = fd_accdb_join( fd_accdb_new( env->accdb_mem, env->shmem,
                                             env->fd, 0UL, NULL ) );
   FD_TEST( env->accdb );
@@ -352,8 +382,6 @@ fuzz_setup( fuzz_env_t * env ) {
   FD_TEST( fork_pool_join( env->fork_pool, fork_pool_shmem,
                            fork_pool_ele_mem, FUZZ_MAX_LIVE_SLOTS ) );
 
-  for( ulong i=0UL; i<FUZZ_KEY_CNT; i++ ) fuzz_key_init( env->key[ i ], i );
-
   fuzz_model_reset( env );
   env->root = fd_accdb_attach_child( env->accdb, SENTINEL );
   fuzz_model_activate( env, env->root, USHORT_MAX );
@@ -362,9 +390,7 @@ fuzz_setup( fuzz_env_t * env ) {
 
 static void
 fuzz_teardown( fuzz_env_t * env ) {
-  free( env->accdb_mem );
-  free( env->shmem_mem );
-  if( env->fd>=0 ) close( env->fd );
+  (void)env;
 }
 
 static fd_accdb_fork_id_t
@@ -406,6 +432,7 @@ fuzz_write_acquire( fuzz_env_t *       env,
   acc[ 0 ].commit = commit;
 
   fd_accdb_release( env->accdb, 1UL, acc );
+  env->touched_key[ key_idx ] = 1U;
 
   if( commit ) FD_FUZZ_MUST_BE_COVERED;
   else         FD_FUZZ_MUST_BE_COVERED;
@@ -469,6 +496,7 @@ fuzz_write_one( fuzz_env_t *       env,
   acc.commit = commit;
 
   fd_accdb_unwrite_one( env->accdb, &acc );
+  env->touched_key[ key_idx ] = 1U;
 
   if( commit ) FD_FUZZ_MUST_BE_COVERED;
   else         FD_FUZZ_MUST_BE_COVERED;
@@ -480,6 +508,18 @@ fuzz_snapshot_full_write( fuzz_env_t *    env,
   if( FD_UNLIKELY( fuzz_active_cnt( env )!=1UL ) ) return;
 
   ulong key_idx = fuzz_bounded( cur, FUZZ_KEY_CNT );
+  if( FD_UNLIKELY( env->touched_key[ key_idx ] ) ) {
+    for( ulong i=0UL; i<FUZZ_KEY_CNT; i++ ) {
+      ulong alt = (key_idx+i+1UL) % FUZZ_KEY_CNT;
+      if( FD_LIKELY( !env->touched_key[ alt ] ) ) {
+        key_idx = alt;
+        break;
+      }
+    }
+    if( FD_UNLIKELY( env->touched_key[ key_idx ] ) ) return;
+  }
+  env->touched_key[ key_idx ] = 1U;
+
   ulong slot = fuzz_bounded( cur, 128UL );
   ulong lamports = 1UL + fuzz_bounded( cur, 1000000UL );
   ulong data_len = fuzz_bounded( cur, FUZZ_DATA_MAX+1UL );
@@ -513,6 +553,7 @@ fuzz_snapshot_incremental_revert( fuzz_env_t *    env,
   ulong write_cnt = 1UL + fuzz_bounded( cur, 2UL );
   for( ulong i=0UL; i<write_cnt; i++ ) {
     ulong key_idx = fuzz_bounded( cur, FUZZ_KEY_CNT );
+    if( FD_UNLIKELY( env->touched_key[ key_idx ] ) ) continue;
     ulong slot = 128UL + fuzz_bounded( cur, 128UL );
     ulong lamports = 1UL + fuzz_bounded( cur, 1000000UL );
     ulong data_len = fuzz_bounded( cur, FUZZ_DATA_MAX+1UL );
@@ -523,6 +564,7 @@ fuzz_snapshot_incremental_revert( fuzz_env_t *    env,
                                           lamports, data_len, executable,
                                           &replaced );
     FD_TEST( rc==1 || rc==2 || rc==-1 );
+    env->touched_key[ key_idx ] = 1U;
   }
   fd_accdb_snapshot_load_end( env->accdb );
 
@@ -541,8 +583,11 @@ LLVMFuzzerInitialize( int *    argc,
   putenv( "FD_LOG_BACKTRACE=0" );
   setenv( "FD_LOG_PATH", "", 0 );
   fd_boot( argc, argv );
-  atexit( fd_halt );
   fd_log_level_core_set( 3 );
+  fd_log_level_stderr_set( 4 );
+  fd_log_level_logfile_set( 4 );
+  fuzz_env_init_once( fuzz_env );
+  atexit( fuzz_cleanup );
   return 0;
 }
 
@@ -552,8 +597,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   if( FD_UNLIKELY( !size ) ) return 0;
 
   fuzz_cursor_t cur = { .cur = data, .rem = size };
-  fuzz_env_t env[ 1 ];
-  fuzz_setup( env );
+  fuzz_setup( fuzz_env );
 
   ulong action_cnt = 1UL + fuzz_bounded( &cur, FUZZ_MAX_ACTIONS );
   for( ulong action_idx=0UL; (action_idx<action_cnt) & !!cur.rem; action_idx++ ) {
@@ -562,87 +606,87 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
     switch( action ) {
       case 0UL: {
-        (void)fuzz_attach_child( env, &cur );
+        (void)fuzz_attach_child( fuzz_env, &cur );
         break;
       }
 
       case 1UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( env, &cur );
-        fuzz_write_acquire( env, &cur, fork_id, key_idx, 1 );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( fuzz_env, &cur );
+        fuzz_write_acquire( fuzz_env, &cur, fork_id, key_idx, 1 );
         break;
       }
 
       case 2UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( env, &cur );
-        fuzz_write_acquire( env, &cur, fork_id, key_idx, 0 );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( fuzz_env, &cur );
+        fuzz_write_acquire( fuzz_env, &cur, fork_id, key_idx, 0 );
         break;
       }
 
       case 3UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_active( env, &cur );
-        fuzz_read_acquire( env, fork_id, key_idx );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_active( fuzz_env, &cur );
+        fuzz_read_acquire( fuzz_env, fork_id, key_idx );
         break;
       }
 
       case 4UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_active( env, &cur );
-        fuzz_read_one( env, fork_id, key_idx );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_active( fuzz_env, &cur );
+        fuzz_read_one( fuzz_env, fork_id, key_idx );
         break;
       }
 
       case 5UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( env, &cur );
-        fuzz_write_one( env, &cur, fork_id, key_idx );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( fuzz_env, &cur );
+        fuzz_write_one( fuzz_env, &cur, fork_id, key_idx );
         break;
       }
 
       case 6UL: {
-        fd_accdb_fork_id_t child = fuzz_pick_root_child( env, &cur );
+        fd_accdb_fork_id_t child = fuzz_pick_root_child( fuzz_env, &cur );
         if( FD_UNLIKELY( child.val==USHORT_MAX ) )
-          child = fuzz_attach_child( env, &cur );
+          child = fuzz_attach_child( fuzz_env, &cur );
         if( FD_UNLIKELY( child.val==USHORT_MAX ) ) break;
 
-        ulong before = fuzz_active_cnt( env );
-        fd_accdb_advance_root( env->accdb, child );
-        fuzz_drain_cmd( env );
-        fuzz_model_advance_root( env, child );
-        fuzz_assert_fork_links( env );
-        if( fuzz_active_cnt( env )<before ) FD_FUZZ_MUST_BE_COVERED;
+        ulong before = fuzz_active_cnt( fuzz_env );
+        fd_accdb_advance_root( fuzz_env->accdb, child );
+        fuzz_drain_cmd( fuzz_env );
+        fuzz_model_advance_root( fuzz_env, child );
+        fuzz_assert_fork_links( fuzz_env );
+        if( fuzz_active_cnt( fuzz_env )<before ) FD_FUZZ_MUST_BE_COVERED;
         break;
       }
 
       case 7UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_nonroot( env, &cur );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_nonroot( fuzz_env, &cur );
         if( FD_UNLIKELY( fork_id.val==USHORT_MAX ) )
-          fork_id = fuzz_attach_child( env, &cur );
+          fork_id = fuzz_attach_child( fuzz_env, &cur );
         if( FD_UNLIKELY( fork_id.val==USHORT_MAX ) ) break;
 
-        fd_accdb_purge( env->accdb, fork_id );
-        fuzz_drain_cmd( env );
-        fuzz_model_purge_subtree( env, fork_id.val );
-        fuzz_assert_fork_links( env );
+        fd_accdb_purge( fuzz_env->accdb, fork_id );
+        fuzz_drain_cmd( fuzz_env );
+        fuzz_model_purge_subtree( fuzz_env, fork_id.val );
+        fuzz_assert_fork_links( fuzz_env );
         FD_FUZZ_MUST_BE_COVERED;
         break;
       }
 
       case 8UL:
-        fuzz_snapshot_full_write( env, &cur );
+        fuzz_snapshot_full_write( fuzz_env, &cur );
         break;
 
       case 9UL:
-        fuzz_snapshot_incremental_revert( env, &cur );
+        fuzz_snapshot_incremental_revert( fuzz_env, &cur );
         break;
 
       default: {
-        fuzz_assert_fork_links( env );
+        fuzz_assert_fork_links( fuzz_env );
         FD_FUZZ_MUST_BE_COVERED;
         break;
       }
     }
 
-    fuzz_assert_fork_links( env );
+    fuzz_assert_fork_links( fuzz_env );
   }
 
-  fuzz_teardown( env );
+  fuzz_teardown( fuzz_env );
   return 0;
 }

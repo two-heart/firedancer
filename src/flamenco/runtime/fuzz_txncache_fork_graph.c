@@ -88,6 +88,7 @@ static uchar * fuzz_shmem;
 static uchar * fuzz_ljoin;
 static ulong   fuzz_shmem_fp;
 static ulong   fuzz_ljoin_fp;
+static model_t fuzz_model[ 1 ];
 
 static void
 hash_from_seed( fd_hash_t * h,
@@ -613,7 +614,7 @@ run_actor_program( uchar const * data,
 
   fd_txncache_t * tc = setup_cache( max_live_slots, max_txn_per_slot );
 
-  model_t model[ 1 ];
+  model_t * model = fuzz_model;
   model_init( model, tc, max_live_slots );
 
   ulong action_cnt = 1UL + fuzz_bounded( &cur, FUZZ_MAX_ACTIONS );
@@ -641,7 +642,7 @@ static void
 run_stale_child_link_seed( void ) {
   fd_txncache_t * tc = setup_cache( 4UL, 4UL );
 
-  model_t model[ 1 ];
+  model_t * model = fuzz_model;
   model_init( model, tc, 4UL );
 
   fd_txncache_fork_id_t winner = fd_txncache_attach_child( tc, (fd_txncache_fork_id_t){ .val = model->current_root } );
@@ -758,6 +759,8 @@ LLVMFuzzerInitialize( int *    argc,
   setenv( "FD_LOG_PATH", "", 0 );
   fd_boot( argc, argv );
   fd_log_level_core_set( 3 );
+  fd_log_level_stderr_set( 4 );
+  fd_log_level_logfile_set( 4 );
   atexit( fd_halt );
 
   fuzz_shmem_fp = fd_txncache_shmem_footprint( FUZZ_MAX_LIVE_SLOTS, FUZZ_MAX_TXN_PER_SLOT );

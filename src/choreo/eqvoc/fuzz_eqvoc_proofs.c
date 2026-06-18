@@ -50,6 +50,8 @@ static fd_pubkey_t        voters[ 2 ];
 static uint               sched[ 128 ];
 static fd_epoch_leaders_t leaders = { .slot0 = 1UL, .slot_cnt = 128UL, .pub = voters, .pub_cnt = 1UL, .sched = sched, .sched_cnt = 128UL };
 static fd_gossip_duplicate_shred_t chunks_out[ FD_EQVOC_CHUNK_CNT ];
+static uchar *            fuzz_eqvoc_mem;
+static ulong              fuzz_eqvoc_footprint;
 
 static uchar
 fuzz_u8( fuzz_reader_t * r ) {
@@ -86,6 +88,13 @@ static void
 init_voters( void ) {
   for( ulong i=0UL; i<sizeof(voters); i++ ) ((uchar *)voters)[ i ] = (uchar)( 0x31U + 17U*i );
   for( ulong i=0UL; i<128UL; i++ ) sched[ i ] = 0U;
+}
+
+static void
+fuzz_cleanup( void ) {
+  free( fuzz_eqvoc_mem );
+  fuzz_eqvoc_mem = NULL;
+  fd_halt();
 }
 
 static void
@@ -187,9 +196,17 @@ LLVMFuzzerInitialize( int  *   argc,
   putenv( "FD_LOG_BACKTRACE=0" );
   setenv( "FD_LOG_PATH", "", 0 );
   fd_boot( argc, argv );
-  atexit( fd_halt );
   fd_log_level_core_set( 3 ); /* crash on warning log */
+  fd_log_level_stderr_set( 4 );
+  fd_log_level_logfile_set( 4 );
   init_voters();
+
+  fuzz_eqvoc_footprint = fd_eqvoc_footprint( FUZZ_DUP_MAX, FUZZ_FEC_MAX, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX );
+  fuzz_eqvoc_footprint = FD_ULONG_ALIGN_UP( fuzz_eqvoc_footprint, fd_eqvoc_align() );
+  fuzz_eqvoc_mem = aligned_alloc( fd_eqvoc_align(), fuzz_eqvoc_footprint );
+  if( FD_UNLIKELY( !fuzz_eqvoc_mem ) ) abort();
+
+  atexit( fuzz_cleanup );
   return 0;
 }
 
@@ -272,11 +289,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   if( mode==MODE_BAD_CHUNK_IDX ) chunks[ fuzz_range( &r, FD_EQVOC_CHUNK_CNT ) ].chunk_index = (uchar)( FD_EQVOC_CHUNK_CNT + fuzz_range( &r, 4UL ) );
   if( mode==MODE_OLD_SLOT      ) for( ulong i=0UL; i<FD_EQVOC_CHUNK_CNT; i++ ) chunks[ i ].slot = FUZZ_ROOT;
 
-  ulong footprint = fd_eqvoc_footprint( FUZZ_DUP_MAX, FUZZ_FEC_MAX, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX );
-  uchar * mem = aligned_alloc( fd_eqvoc_align(), footprint );
-  if( FD_UNLIKELY( !mem ) ) abort();
-
-  fd_eqvoc_t * eqvoc = fd_eqvoc_join( fd_eqvoc_new( mem, FUZZ_DUP_MAX, FUZZ_FEC_MAX, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX, fuzz_ulong( &r ) ) );
+  fd_eqvoc_t * eqvoc = fd_eqvoc_join( fd_eqvoc_new( fuzz_eqvoc_mem, FUZZ_DUP_MAX, FUZZ_FEC_MAX, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX, fuzz_ulong( &r ) ) );
   fd_eqvoc_update_voters( eqvoc, voters, 2UL );
 
   fd_pubkey_t const * from = ( mode==MODE_BAD_FROM ) ? &((fd_pubkey_t const){ .uc = { 0xffU } }) : &voters[ fuzz_range( &r, 2UL ) ];
@@ -319,7 +332,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
 
   fd_eqvoc_delete( fd_eqvoc_leave( eqvoc ) );
-  free( mem );
   return 0;
 }
 

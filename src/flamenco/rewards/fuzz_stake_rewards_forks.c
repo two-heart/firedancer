@@ -53,6 +53,7 @@ typedef struct {
 } model_t;
 
 static void * fuzz_mem;
+static model_t fuzz_model[ 1 ];
 
 static uchar
 fuzz_u8( fuzz_reader_t * r ) {
@@ -318,11 +319,14 @@ LLVMFuzzerInitialize( int  *   argc,
   fd_boot( argc, argv );
   atexit( fd_halt );
   fd_log_level_core_set( 3 );
+  fd_log_level_stderr_set( 4 );
+  fd_log_level_logfile_set( 4 );
 
   ulong footprint = fd_stake_rewards_footprint( FUZZ_MAX_STAKE_ACCOUNTS,
                                                 FUZZ_EXPECTED_ACCOUNTS,
                                                 FUZZ_MAX_FORKS );
-  fuzz_mem = aligned_alloc( fd_stake_rewards_align(), footprint );
+  fuzz_mem = aligned_alloc( fd_stake_rewards_align(),
+                            FD_ULONG_ALIGN_UP( footprint, fd_stake_rewards_align() ) );
   if( FD_UNLIKELY( !fuzz_mem ) ) FD_LOG_ERR(( "failed to allocate stake rewards fuzz memory" ));
   return 0;
 }
@@ -346,11 +350,11 @@ LLVMFuzzerTestOneInput( uchar const * data,
                             fuzz_u64( &r ) ) );
   if( FD_UNLIKELY( !stake_rewards ) ) FD_LOG_ERR(( "failed to initialize stake rewards" ));
 
-  model_t m;
-  memset( &m, 0, sizeof(m) );
-  m.stake_rewards = stake_rewards;
-  m.epoch         = 1UL + fuzz_bounded( &r, 1000000UL );
-  m.root_slot     = fuzz_bounded( &r, 1000000UL );
+  model_t * m = fuzz_model;
+  fd_memset( m, 0, sizeof(*m) );
+  m->stake_rewards = stake_rewards;
+  m->epoch         = 1UL + fuzz_bounded( &r, 1000000UL );
+  m->root_slot     = fuzz_bounded( &r, 1000000UL );
 
   ulong action_cnt = 1UL + fuzz_bounded( &r, FUZZ_MAX_ACTIONS );
   for( ulong action_idx=0UL; action_idx<action_cnt; action_idx++ ) {
@@ -358,24 +362,24 @@ LLVMFuzzerTestOneInput( uchar const * data,
     switch( op ) {
     case 0:
     case 1:
-      if( !init_fork( &m, &r, 0 ) ) clear_rewards( &m );
+      if( !init_fork( m, &r, 0 ) ) clear_rewards( m );
       break;
     case 2:
-      (void)init_fork( &m, &r, 1 );
+      (void)init_fork( m, &r, 1 );
       break;
     case 3:
     case 4:
     case 5:
-      insert_reward( &m, &r );
+      insert_reward( m, &r );
       break;
     case 6:
-      distribute_partition( &m, &r );
+      distribute_partition( m, &r );
       break;
     default:
-      clear_rewards( &m );
+      clear_rewards( m );
       break;
     }
-    validate_model( &m );
+    validate_model( m );
   }
 
   return 0;

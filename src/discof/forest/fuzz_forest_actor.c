@@ -60,6 +60,8 @@ typedef struct {
 } fuzz_env_t;
 
 static fd_wksp_t * g_wksp;
+static void *      g_forest_mem;
+static fuzz_program_t g_prog[ 1 ];
 
 static uchar
 fuzz_fallback_u8( fuzz_cursor_t const * cur ) {
@@ -646,6 +648,11 @@ LLVMFuzzerInitialize( int *    pargc,
                                   page_cnt, fd_shmem_cpu_idx( numa_idx ),
                                   "forest_fuzz", 64UL );
   FD_TEST( g_wksp );
+  g_forest_mem = fd_wksp_alloc_laddr( g_wksp,
+                                      fd_forest_align(),
+                                      fd_forest_footprint( FUZZ_ELE_MAX ),
+                                      1UL );
+  FD_TEST( g_forest_mem );
 
   atexit( fd_halt );
   atexit( fuzz_cleanup );
@@ -663,15 +670,11 @@ LLVMFuzzerTestOneInput( uchar const * data,
     .data_sz  = data_sz,
     .data_off = 0UL,
   };
-  fuzz_program_t prog[1];
+  fuzz_program_t * prog = g_prog;
   fuzz_decode_program( &cur, prog );
 
-  void * mem = fd_wksp_alloc_laddr( g_wksp, fd_forest_align(),
-                                    fd_forest_footprint( FUZZ_ELE_MAX ), 1UL );
-  FD_TEST( mem );
-
   fd_forest_t * forest =
-    fd_forest_join( fd_forest_new( mem, FUZZ_ELE_MAX,
+    fd_forest_join( fd_forest_new( g_forest_mem, FUZZ_ELE_MAX,
                                    42UL + fd_ulong_hash( data_sz ) ) );
   FD_TEST( forest );
 
@@ -690,6 +693,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
     fuzz_execute_op( &env, &prog->ops[ i ] );
   }
 
-  fd_wksp_free_laddr( fd_forest_delete( fd_forest_leave( forest ) ) );
+  fd_forest_delete( fd_forest_leave( forest ) );
   return 0;
 }

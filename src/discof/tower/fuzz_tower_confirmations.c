@@ -66,6 +66,9 @@ typedef struct {
 
 static fuzz_env_t fuzz_env[1];
 static int        fuzz_env_inited;
+static fd_pubkey_t fuzz_vote_acc_cache[ FUZZ_VTR_CNT ];
+static fd_pubkey_t fuzz_auth_vtr_cache[ FUZZ_VTR_CNT ];
+static fd_pubkey_t fuzz_id_key_cache[ FUZZ_VTR_CNT ];
 
 static void *
 fuzz_alloc( ulong align,
@@ -110,18 +113,30 @@ fuzz_hash( fd_hash_t * out,
 static void
 fuzz_vote_acc( fd_pubkey_t * out,
                ulong         idx ) {
+  if( FD_LIKELY( fuzz_env_inited && idx<FUZZ_VTR_CNT ) ) {
+    *out = fuzz_vote_acc_cache[ idx ];
+    return;
+  }
   fuzz_pubkey( out, 0xAUL, idx );
 }
 
 static void
 fuzz_auth_vtr( fd_pubkey_t * out,
                ulong         idx ) {
+  if( FD_LIKELY( fuzz_env_inited && idx<FUZZ_VTR_CNT ) ) {
+    *out = fuzz_auth_vtr_cache[ idx ];
+    return;
+  }
   fuzz_pubkey( out, 0xBUL, idx );
 }
 
 static void
 fuzz_id_key( fd_pubkey_t * out,
              ulong         idx ) {
+  if( FD_LIKELY( fuzz_env_inited && idx<FUZZ_VTR_CNT ) ) {
+    *out = fuzz_id_key_cache[ idx ];
+    return;
+  }
   fuzz_pubkey( out, 0xCUL, idx );
 }
 
@@ -219,6 +234,12 @@ fuzz_env_init_once( void ) {
   fuzz_env->next_vtr_pool_mem = fuzz_alloc( epoch_vtr_pool_align(), epoch_vtr_pool_footprint( FUZZ_VTR_CNT ) );
   fuzz_env->next_vtr_map_mem  = fuzz_alloc( epoch_vtr_map_align(),  epoch_vtr_map_footprint( chain_cnt ) );
   fuzz_env->txn_tower_mem     = fuzz_alloc( fd_tower_align(),      fd_tower_footprint( 2UL, 2UL ) );
+
+  for( ulong i=0UL; i<FUZZ_VTR_CNT; i++ ) {
+    fuzz_pubkey( &fuzz_vote_acc_cache[ i ], 0xAUL, i );
+    fuzz_pubkey( &fuzz_auth_vtr_cache[ i ], 0xBUL, i );
+    fuzz_pubkey( &fuzz_id_key_cache  [ i ], 0xCUL, i );
+  }
 
   fuzz_env_inited = 1;
 }
@@ -588,6 +609,8 @@ LLVMFuzzerInitialize( int *    argc,
   fd_boot( argc, argv );
   atexit( fd_halt );
   fd_log_level_core_set( 3 );
+  fd_log_level_stderr_set( 4 );
+  fd_log_level_logfile_set( 4 );
   fuzz_env_init_once();
   return 0;
 }

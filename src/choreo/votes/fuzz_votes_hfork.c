@@ -89,6 +89,19 @@ typedef struct {
   ulong last_bank_idx;
 } fuzz_model_t;
 
+static void *      fuzz_votes_mem;
+static void *      fuzz_hfork_mem;
+static fuzz_model_t fuzz_model[ 1 ];
+
+static void
+fuzz_cleanup( void ) {
+  free( fuzz_votes_mem );
+  free( fuzz_hfork_mem );
+  fuzz_votes_mem = NULL;
+  fuzz_hfork_mem = NULL;
+  fd_halt();
+}
+
 static uchar
 fuzz_u8( fuzz_reader_t * r ) {
   if( FD_LIKELY( r->off<r->data_sz ) ) return r->data[ r->off++ ];
@@ -658,8 +671,18 @@ LLVMFuzzerInitialize( int *    argc,
   putenv( "FD_LOG_BACKTRACE=0" );
   setenv( "FD_LOG_PATH", "", 0 );
   fd_boot( argc, argv );
-  atexit( fd_halt );
   fd_log_level_core_set( 3 ); /* crash on warning log */
+  fd_log_level_stderr_set( 4 );
+  fd_log_level_logfile_set( 4 );
+
+  ulong votes_fp = FD_ULONG_ALIGN_UP( fd_votes_footprint( FUZZ_SLOT_MAX, FUZZ_VTR_MAX ), fd_votes_align() );
+  ulong hfork_fp = FD_ULONG_ALIGN_UP( fd_hfork_footprint( FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX ), fd_hfork_align() );
+  fuzz_votes_mem = aligned_alloc( fd_votes_align(), votes_fp );
+  fuzz_hfork_mem = aligned_alloc( fd_hfork_align(), hfork_fp );
+  FD_TEST( fuzz_votes_mem );
+  FD_TEST( fuzz_hfork_mem );
+
+  atexit( fuzz_cleanup );
   return 0;
 }
 
@@ -673,20 +696,12 @@ LLVMFuzzerTestOneInput( uchar const * data,
     .salt    = 0x48666f726b566f74UL ^ size
   };
 
-  ulong votes_fp = fd_votes_footprint( FUZZ_SLOT_MAX, FUZZ_VTR_MAX );
-  ulong hfork_fp = fd_hfork_footprint( FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX );
-
-  void * votes_mem = aligned_alloc( fd_votes_align(),  votes_fp );
-  void * hfork_mem = aligned_alloc( fd_hfork_align(), hfork_fp );
-  FD_TEST( votes_mem );
-  FD_TEST( hfork_mem );
-
-  fd_votes_t * votes = fd_votes_join( fd_votes_new( votes_mem, FUZZ_SLOT_MAX, FUZZ_VTR_MAX, 0xdecafbadUL ) );
-  fd_hfork_t * hfork = fd_hfork_join( fd_hfork_new( hfork_mem, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX, 0xbadc0feeUL ) );
+  fd_votes_t * votes = fd_votes_join( fd_votes_new( fuzz_votes_mem, FUZZ_SLOT_MAX, FUZZ_VTR_MAX, 0xdecafbadUL ) );
+  fd_hfork_t * hfork = fd_hfork_join( fd_hfork_new( fuzz_hfork_mem, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX, 0xbadc0feeUL ) );
   FD_TEST( votes );
   FD_TEST( hfork );
 
-  fuzz_model_t model[ 1 ];
+  fuzz_model_t * model = fuzz_model;
   model_init( model );
 
   fd_pubkey_t initial_vote_accs[ FUZZ_VTR_MAX ];
@@ -712,8 +727,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   fd_votes_delete( fd_votes_leave( votes ) );
   fd_hfork_delete( fd_hfork_leave( hfork ) );
-  free( votes_mem );
-  free( hfork_mem );
 
   return 0;
 }

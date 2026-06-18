@@ -78,6 +78,7 @@ typedef struct {
 } fuzz_model_t;
 
 static fd_wksp_t * fuzz_wksp;
+static void *      fuzz_reasm_mem;
 
 static fuzz_node_desc_t const fuzz_desc[ FUZZ_NODE_MAX ] = {
   /* parent,           slot, fec_idx, parent_off, data_cnt, dc, sc, ldr, invalid */
@@ -140,6 +141,8 @@ LLVMFuzzerInitialize( int  *   argc,
   setenv( "FD_LOG_PATH", "", 0 );
   fd_boot( argc, argv );
   fd_log_level_core_set( 3 ); /* crash on warning log */
+  fd_log_level_stderr_set( 4 );
+  fd_log_level_logfile_set( 4 );
 
   fuzz_wksp = fd_wksp_new_anonymous( FD_SHMEM_NORMAL_PAGE_SZ,
                                      FUZZ_WKSP_PG,
@@ -147,6 +150,11 @@ LLVMFuzzerInitialize( int  *   argc,
                                      "reasm_fuzz",
                                      0UL );
   FD_TEST( fuzz_wksp );
+  fuzz_reasm_mem = fd_wksp_alloc_laddr( fuzz_wksp,
+                                        fd_reasm_align(),
+                                        fd_reasm_footprint( FUZZ_FEC_MAX ),
+                                        1UL );
+  FD_TEST( fuzz_reasm_mem );
   atexit( fuzz_fini );
   return 0;
 }
@@ -517,14 +525,8 @@ LLVMFuzzerTestOneInput( uchar const * data,
   fd_hash_t root_key[1];
   fuzz_hash( root_key, 1UL + fuzz_bounded( &cur, 8UL ) );
 
-  void * mem = fd_wksp_alloc_laddr( fuzz_wksp,
-                                    fd_reasm_align(),
-                                    fd_reasm_footprint( FUZZ_FEC_MAX ),
-                                    1UL );
-  FD_TEST( mem );
-
   fd_reasm_t * reasm =
-    fd_reasm_join( fd_reasm_new( mem,
+    fd_reasm_join( fd_reasm_new( fuzz_reasm_mem,
                                  FUZZ_FEC_MAX,
                                  fuzz_bounded( &cur, 1024UL ) ) );
   FD_TEST( reasm );
@@ -567,6 +569,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
   if( FD_UNLIKELY( model->publish_cnt   ) ) FD_FUZZ_MUST_BE_COVERED;
   if( FD_UNLIKELY( model->eviction_cnt  ) ) FD_FUZZ_MUST_BE_COVERED;
 
-  fd_wksp_free_laddr( fd_reasm_delete( fd_reasm_leave( reasm ) ) );
+  fd_reasm_delete( fd_reasm_leave( reasm ) );
   return 0;
 }

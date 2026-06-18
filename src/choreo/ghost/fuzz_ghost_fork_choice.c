@@ -49,6 +49,7 @@ typedef struct {
 } fuzz_case_t;
 
 static fd_wksp_t * fuzz_wksp;
+static void *      fuzz_ghost_mem;
 
 static void
 fuzz_cleanup( void ) {
@@ -423,6 +424,8 @@ LLVMFuzzerInitialize( int *    argc,
   setenv( "FD_LOG_PATH", "", 0 );
   fd_boot( argc, argv );
   fd_log_level_core_set( 3 ); /* crash on warning log */
+  fd_log_level_stderr_set( 4 );
+  fd_log_level_logfile_set( 4 );
 
   fuzz_wksp = fd_wksp_new_anonymous( FD_SHMEM_NORMAL_PAGE_SZ,
                                      FUZZ_WKSP_PAGES,
@@ -430,6 +433,12 @@ LLVMFuzzerInitialize( int *    argc,
                                      "ghost_fuzz",
                                      0UL );
   FD_TEST( fuzz_wksp );
+
+  fuzz_ghost_mem = fd_wksp_alloc_laddr( fuzz_wksp,
+                                        fd_ghost_align(),
+                                        fd_ghost_footprint( FUZZ_BLK_MAX, FUZZ_VOTER_MAX ),
+                                        1UL );
+  FD_TEST( fuzz_ghost_mem );
 
   atexit( fuzz_cleanup );
   return 0;
@@ -448,9 +457,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   fuzz_case_t c;
   memset( &c, 0, sizeof(c) );
 
-  ulong footprint = fd_ghost_footprint( FUZZ_BLK_MAX, FUZZ_VOTER_MAX );
-  c.mem = fd_wksp_alloc_laddr( fuzz_wksp, fd_ghost_align(), footprint, 1UL );
-  FD_TEST( c.mem );
+  c.mem = fuzz_ghost_mem;
 
   c.ghost = fd_ghost_join( fd_ghost_new( c.mem, FUZZ_BLK_MAX, FUZZ_VOTER_MAX, cur.salt ) );
   FD_TEST( c.ghost );
@@ -494,7 +501,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
     fuzz_check( &c );
   }
 
-  fd_wksp_free_laddr( fd_ghost_delete( fd_ghost_leave( c.ghost ) ) );
+  fd_ghost_delete( fd_ghost_leave( c.ghost ) );
   FD_FUZZ_MUST_BE_COVERED;
   return 0;
 }
