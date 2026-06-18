@@ -92,6 +92,11 @@ typedef struct {
 static void *      fuzz_votes_mem;
 static void *      fuzz_hfork_mem;
 static fuzz_model_t fuzz_model[ 1 ];
+static fd_pubkey_t fuzz_initial_vote_accs[ FUZZ_VTR_MAX ];
+
+static void
+pubkey_from_idx( fd_pubkey_t * out,
+                 ulong         idx );
 
 static void
 fuzz_cleanup( void ) {
@@ -100,6 +105,11 @@ fuzz_cleanup( void ) {
   fuzz_votes_mem = NULL;
   fuzz_hfork_mem = NULL;
   fd_halt();
+}
+
+static void
+init_vote_accs( void ) {
+  for( ulong i=0UL; i<FUZZ_VTR_MAX; i++ ) pubkey_from_idx( &fuzz_initial_vote_accs[ i ], i );
 }
 
 static uchar
@@ -665,6 +675,92 @@ apply_set_forward_flags( fd_votes_t *    votes,
   }
 }
 
+static void
+run_votes_same_block_multi_slot_seed( void ) {
+  fd_votes_t * votes = fd_votes_join( fd_votes_new( fuzz_votes_mem, FUZZ_SLOT_MAX, FUZZ_VTR_MAX, 0x51a0b10cUL ) );
+  FD_TEST( votes );
+  fd_votes_update_voters( votes, fuzz_initial_vote_accs, FUZZ_VTR_MAX );
+  fd_votes_publish( votes, FUZZ_ROOT_BASE );
+
+  fd_hash_t block_id[ 1 ];
+  hash_from_idx( block_id, 0UL, 7UL );
+
+  FD_TEST( fd_votes_count_vote( votes, &fuzz_initial_vote_accs[ 0 ], 11UL, FUZZ_ROOT_BASE+1UL, block_id )==FD_VOTES_SUCCESS );
+  FD_TEST( fd_votes_count_vote( votes, &fuzz_initial_vote_accs[ 1 ], 13UL, FUZZ_ROOT_BASE+2UL, block_id )==FD_VOTES_SUCCESS );
+
+  fd_votes_blk_t * s1 = fd_votes_query( votes, FUZZ_ROOT_BASE+1UL, block_id );
+  fd_votes_blk_t * s2 = fd_votes_query( votes, FUZZ_ROOT_BASE+2UL, block_id );
+  FD_TEST( s1 && s1->stake==11UL );
+  FD_TEST( s2 && s2->stake==13UL );
+
+  fd_votes_publish( votes, FUZZ_ROOT_BASE+2UL );
+  FD_TEST( !fd_votes_query( votes, FUZZ_ROOT_BASE+1UL, block_id ) );
+  FD_TEST( fd_votes_query( votes, FUZZ_ROOT_BASE+2UL, block_id ) );
+
+  fd_votes_delete( fd_votes_leave( votes ) );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
+static void
+run_hfork_multi_bank_eviction_seed( void ) {
+  fd_hfork_t * hfork = fd_hfork_join( fd_hfork_new( fuzz_hfork_mem, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX, 0xe71c7100UL ) );
+  FD_TEST( hfork );
+  fd_hfork_update_voters( hfork, fuzz_initial_vote_accs, FUZZ_VTR_MAX );
+
+  fd_hash_t block_id[ 1 ];
+  hash_from_idx( block_id, 0UL, 3UL );
+
+  for( ulong i=0UL; i<4UL; i++ ) {
+    fd_hash_t bank_hash[ 1 ];
+    hash_from_idx( bank_hash, 1UL, i );
+    FD_TEST( fd_hfork_count_vote( hfork, &fuzz_initial_vote_accs[ i ], block_id, bank_hash,
+                                  FUZZ_ROOT_BASE+1UL, 1UL+i, 100UL )==FD_HFORK_SUCCESS );
+  }
+
+  /* Force FIFO eviction of front, middle, back, then singleton bank
+     hash matchers from the same block id.  The public API has no
+     iterator, so this seed is a structural no-crash regression and
+     keeps the historical removal shape one-byte reachable. */
+  for( ulong voter_idx=0UL; voter_idx<4UL; voter_idx++ ) {
+    for( ulong j=0UL; j<FUZZ_PER_VTR_MAX; j++ ) {
+      fd_hash_t next_block[ 1 ];
+      fd_hash_t next_bank [ 1 ];
+      hash_from_idx( next_block, 0UL, 100UL + voter_idx*FUZZ_PER_VTR_MAX + j );
+      hash_from_idx( next_bank,  1UL, 100UL + voter_idx*FUZZ_PER_VTR_MAX + j );
+      FD_TEST( fd_hfork_count_vote( hfork, &fuzz_initial_vote_accs[ voter_idx ], next_block, next_bank,
+                                    FUZZ_ROOT_BASE+2UL+j, 1UL, 100UL )==FD_HFORK_SUCCESS );
+    }
+  }
+
+  fd_hfork_delete( fd_hfork_leave( hfork ) );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
+static void
+run_hfork_huge_stake_seed( void ) {
+  fd_hfork_t * hfork = fd_hfork_join( fd_hfork_new( fuzz_hfork_mem, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX, 0x0f100f10UL ) );
+  FD_TEST( hfork );
+  fd_hfork_update_voters( hfork, fuzz_initial_vote_accs, 1UL );
+
+  fd_hash_t block_id[ 1 ];
+  fd_hash_t bank_hash[ 1 ];
+  fd_hash_t our_hash [ 1 ];
+  hash_from_idx( block_id,  0UL, 0xfeedUL );
+  hash_from_idx( bank_hash, 1UL, 0xbeefUL );
+  hash_from_idx( our_hash,  1UL, 0xcafeUL );
+
+  ulong total_stake = ULONG_MAX;
+  ulong stake       = total_stake/100UL*53UL;
+  FD_TEST( stake>ULONG_MAX/100UL ); /* document that the old comparison overflowed */
+
+  FD_TEST( fd_hfork_count_vote( hfork, &fuzz_initial_vote_accs[ 0 ], block_id, bank_hash,
+                                FUZZ_ROOT_BASE+1UL, stake, total_stake )==FD_HFORK_SUCCESS );
+  FD_TEST( fd_hfork_record_our_bank_hash( hfork, block_id, our_hash, total_stake )==FD_HFORK_ERR_MISMATCHED );
+
+  fd_hfork_delete( fd_hfork_leave( hfork ) );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
 int
 LLVMFuzzerInitialize( int *    argc,
                       char *** argv ) {
@@ -674,6 +770,7 @@ LLVMFuzzerInitialize( int *    argc,
   fd_log_level_core_set( 3 ); /* crash on warning log */
   fd_log_level_stderr_set( 4 );
   fd_log_level_logfile_set( 4 );
+  init_vote_accs();
 
   ulong votes_fp = FD_ULONG_ALIGN_UP( fd_votes_footprint( FUZZ_SLOT_MAX, FUZZ_VTR_MAX ), fd_votes_align() );
   ulong hfork_fp = FD_ULONG_ALIGN_UP( fd_hfork_footprint( FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX ), fd_hfork_align() );
@@ -689,6 +786,19 @@ LLVMFuzzerInitialize( int *    argc,
 int
 LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {
+  if( FD_UNLIKELY( size && data[ 0 ]==0xf0U ) ) {
+    run_votes_same_block_multi_slot_seed();
+    return 0;
+  }
+  if( FD_UNLIKELY( size && data[ 0 ]==0xf1U ) ) {
+    run_hfork_multi_bank_eviction_seed();
+    return 0;
+  }
+  if( FD_UNLIKELY( size && data[ 0 ]==0xf2U ) ) {
+    run_hfork_huge_stake_seed();
+    return 0;
+  }
+
   fuzz_reader_t r = {
     .data    = data,
     .data_sz = size,
@@ -704,10 +814,8 @@ LLVMFuzzerTestOneInput( uchar const * data,
   fuzz_model_t * model = fuzz_model;
   model_init( model );
 
-  fd_pubkey_t initial_vote_accs[ FUZZ_VTR_MAX ];
-  for( ulong i=0UL; i<FUZZ_VTR_MAX; i++ ) initial_vote_accs[ i ] = model->voter[ i ].pubkey;
-  fd_votes_update_voters( votes, initial_vote_accs, FUZZ_VTR_MAX );
-  fd_hfork_update_voters( hfork, initial_vote_accs, FUZZ_VTR_MAX );
+  fd_votes_update_voters( votes, fuzz_initial_vote_accs, FUZZ_VTR_MAX );
+  fd_hfork_update_voters( hfork, fuzz_initial_vote_accs, FUZZ_VTR_MAX );
   fd_votes_publish( votes, model->root );
 
   ulong action_cnt = 1UL + fuzz_bounded( &r, FUZZ_ACTION_MAX );

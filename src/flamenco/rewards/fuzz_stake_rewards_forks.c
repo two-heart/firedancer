@@ -16,6 +16,7 @@
 #define FUZZ_MAX_ENTRIES        (48UL)
 #define FUZZ_MAX_PARTITIONS     (16U)
 #define FUZZ_MAX_ACTIONS        (96UL)
+#define FUZZ_MAX_SUPPORTED_FORKS (128UL)
 
 typedef struct {
   uchar const * cur;
@@ -54,6 +55,7 @@ typedef struct {
 
 static void * fuzz_mem;
 static model_t fuzz_model[ 1 ];
+static void * fuzz_ctor_mem;
 
 static uchar
 fuzz_u8( fuzz_reader_t * r ) {
@@ -328,13 +330,50 @@ LLVMFuzzerInitialize( int  *   argc,
   fuzz_mem = aligned_alloc( fd_stake_rewards_align(),
                             FD_ULONG_ALIGN_UP( footprint, fd_stake_rewards_align() ) );
   if( FD_UNLIKELY( !fuzz_mem ) ) FD_LOG_ERR(( "failed to allocate stake rewards fuzz memory" ));
+
+  ulong ctor_footprint = fd_stake_rewards_footprint( 1UL, 1UL, 255UL );
+  fuzz_ctor_mem = aligned_alloc( fd_stake_rewards_align(),
+                                 FD_ULONG_ALIGN_UP( ctor_footprint, fd_stake_rewards_align() ) );
+  if( FD_UNLIKELY( !fuzz_ctor_mem ) ) FD_LOG_ERR(( "failed to allocate stake rewards constructor fuzz memory" ));
   return 0;
+}
+
+static void
+run_constructor_bounds_seed( void ) {
+  static ulong const widths[] = {
+    0UL, 1UL, FUZZ_MAX_SUPPORTED_FORKS,
+    FUZZ_MAX_SUPPORTED_FORKS+1UL, 255UL
+  };
+
+  for( ulong i=0UL; i<sizeof(widths)/sizeof(widths[0]); i++ ) {
+    ulong width = widths[ i ];
+    fd_log_level_core_set( 4 );
+    void * shmem = fd_stake_rewards_new( fuzz_ctor_mem, 1UL, 1UL, width, 0x5eedUL + width );
+    fd_log_level_core_set( 3 );
+    fd_stake_rewards_t * rewards = shmem ? fd_stake_rewards_join( shmem ) : NULL;
+
+    if( FD_UNLIKELY( !rewards ) ) {
+      continue;
+    }
+
+    ulong init_cnt = fd_ulong_min( width, FUZZ_MAX_SUPPORTED_FORKS+1UL );
+    for( ulong j=0UL; j<init_cnt; j++ ) {
+      fd_hash_t parent = { .ul = { j+1UL, width } };
+      (void)fd_stake_rewards_init( rewards, 1UL, &parent, j+1UL, 1U );
+    }
+  }
+
+  FD_FUZZ_MUST_BE_COVERED;
 }
 
 int
 LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         data_sz ) {
   if( FD_UNLIKELY( data_sz>512UL ) ) return -1;
+  if( FD_UNLIKELY( data_sz && data[ 0 ]==0xf0U ) ) {
+    run_constructor_bounds_seed();
+    return 0;
+  }
 
   fuzz_reader_t r = {
     .cur  = data,

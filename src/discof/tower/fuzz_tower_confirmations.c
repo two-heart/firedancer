@@ -601,6 +601,47 @@ fuzz_vote_txn_action( fuzz_env_t *    env,
   fuzz_drain_publishes( ctx );
 }
 
+static void
+run_duplicate_confirm_seed( fuzz_env_t *    env,
+                            fuzz_reader_t * r ) {
+  fd_tower_tile_t * ctx = env->ctx;
+  fuzz_known_t * root = &env->known[ 0 ];
+
+  fd_hash_t block_a[1];
+  fd_hash_t block_b[1];
+  fuzz_hash( block_a, FUZZ_ROOT_SLOT+1UL, 0xA11CEUL );
+  fuzz_hash( block_b, FUZZ_ROOT_SLOT+1UL, 0xB0BUL   );
+
+  fd_replay_slot_completed_t sc;
+  memset( &sc, 0, sizeof(sc) );
+  sc.slot            = FUZZ_ROOT_SLOT+1UL;
+  sc.parent_slot     = root->slot;
+  sc.epoch           = 0UL;
+  sc.bank_idx        = sc.slot;
+  sc.bank_seq        = sc.slot;
+  sc.block_id        = *block_a;
+  sc.parent_block_id = root->block_id;
+  sc.bank_hash       = *block_a;
+  sc.block_hash      = *block_a;
+  replay_slot_completed( ctx, &sc, 0UL, NULL );
+  fuzz_remember( env, sc.slot, sc.parent_slot, block_a, &root->block_id );
+  fuzz_drain_publishes( ctx );
+
+  sc.block_id  = *block_b;
+  sc.bank_hash = *block_b;
+  sc.block_hash = *block_b;
+  replay_slot_completed( ctx, &sc, 0UL, NULL );
+  fuzz_remember( env, sc.slot, sc.parent_slot, block_b, &root->block_id );
+  fuzz_drain_publishes( ctx );
+
+  fuzz_count_votes_for_block( ctx, sc.slot, block_b, r );
+  publish_slot_confirmed( ctx, sc.slot, block_b, fuzz_total_stake_for_slot( ctx, sc.slot ) );
+  fuzz_drain_publishes( ctx );
+
+  FD_TEST( fuzz_prior_vote_visible( ctx ) );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
 int
 LLVMFuzzerInitialize( int *    argc,
                       char *** argv ) {
@@ -627,6 +668,11 @@ LLVMFuzzerTestOneInput( uchar const * data,
     .salt    = size ^ 0x9e3779b97f4a7c15UL
   };
   fuzz_setup_case( fuzz_env, &r );
+
+  if( FD_UNLIKELY( size && data[ 0 ]==0xf0U ) ) {
+    run_duplicate_confirm_seed( fuzz_env, &r );
+    return 0;
+  }
 
   ulong action_cnt = 1UL + fuzz_range( &r, FUZZ_ACTION_MAX );
   for( ulong i=0UL; i<action_cnt; i++ ) {

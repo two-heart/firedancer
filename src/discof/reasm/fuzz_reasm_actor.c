@@ -517,9 +517,87 @@ fuzz_query( fuzz_cursor_t * cur,
   }
 }
 
+static void
+run_xid_evict_seed( void ) {
+  fd_reasm_fec_t * ev[1];
+  fd_reasm_t * reasm =
+    fd_reasm_join( fd_reasm_new( fuzz_reasm_mem, FUZZ_FEC_MAX, 0UL ) );
+  FD_TEST( reasm );
+
+  fd_hash_t mr0[1] = {{{ 1UL, 0UL }}};
+  fd_reasm_init( reasm, mr0, 0UL );
+
+  fd_hash_t mr1[1] = {{{ 1UL, 1UL }}};
+  fd_hash_t mr2[1] = {{{ 1UL, 2UL }}};
+  fd_hash_t mr3[1] = {{{ 1UL, 3UL }}};
+  fd_hash_t mr4[1] = {{{ 1UL, 4UL }}};
+
+  fd_reasm_insert( reasm, mr1, mr0, 1UL, 0U,  1U, 32U, 0, 0, 0, NULL, ev );
+  fd_reasm_insert( reasm, mr2, mr1, 1UL, 32U, 1U, 32U, 0, 0, 0, NULL, ev );
+  fd_reasm_insert( reasm, mr3, mr2, 1UL, 64U, 1U, 32U, 0, 1, 0, NULL, ev );
+  fd_reasm_fec_t * fec4 =
+    fd_reasm_insert( reasm, mr4, mr2, 1UL, 64U, 1U, 32U, 0, 1, 0, NULL, ev );
+
+  ulong last_xid = (1UL << 32) | 64UL;
+  FD_TEST( xid_query( reasm->xid, last_xid, NULL )->cnt==2UL );
+
+  fd_reasm_confirm( reasm, mr4 );
+  FD_TEST( xid_query( reasm->xid, last_xid, NULL )->idx==pool_idx( reasm_pool( reasm ), fec4 ) );
+
+  fd_reasm_publish( reasm, mr4, NULL );
+  FD_TEST( xid_query( reasm->xid, last_xid, NULL )->cnt==1UL );
+  FD_TEST( xid_query( reasm->xid, last_xid, NULL )->idx==pool_idx( reasm_pool( reasm ), fec4 ) );
+
+  fd_reasm_delete( fd_reasm_leave( reasm ) );
+
+  reasm = fd_reasm_join( fd_reasm_new( fuzz_reasm_mem, FUZZ_FEC_MAX, 0UL ) );
+  FD_TEST( reasm );
+
+  fd_hash_t mra[1] = {{{ 2UL, 0UL }}};
+  fd_reasm_init( reasm, mra, 0UL );
+
+  fd_hash_t mrb[1] = {{{ 2UL, 1UL }}};
+  fd_hash_t mrc[1] = {{{ 2UL, 2UL }}};
+  fd_hash_t mrd[1] = {{{ 2UL, 3UL }}};
+  fd_hash_t mre[1] = {{{ 2UL, 4UL }}};
+  fd_hash_t mrf[1] = {{{ 2UL, 5UL }}};
+  fd_hash_t mrg[1] = {{{ 2UL, 6UL }}};
+
+  fd_reasm_insert( reasm, mrb, mra, 1UL, 0U,  1U, 32U, 0, 0, 0, NULL, ev );
+  fd_reasm_insert( reasm, mrc, mrb, 1UL, 32U, 1U, 32U, 0, 0, 0, NULL, ev );
+  fd_reasm_insert( reasm, mre, mrc, 1UL, 64U, 1U, 32U, 0, 1, 0, NULL, ev );
+  fd_reasm_fec_t * fecd =
+    fd_reasm_insert( reasm, mrd, mrc, 1UL, 64U, 1U, 32U, 0, 1, 0, NULL, ev );
+  fd_reasm_fec_t * fecf =
+    fd_reasm_insert( reasm, mrf, mrc, 1UL, 64U, 1U, 32U, 0, 1, 0, NULL, ev );
+
+  ulong xid2 = (1UL << 32) | 64UL;
+  FD_TEST( xid_query( reasm->xid, xid2, NULL )->cnt==3UL );
+
+  fd_reasm_confirm( reasm, mrd );
+  FD_TEST( xid_query( reasm->xid, xid2, NULL )->idx==pool_idx( reasm_pool( reasm ), fecf ) );
+
+  fd_reasm_remove( reasm, fecf, NULL );
+  fd_reasm_pool_release( reasm, fecf );
+  FD_TEST( xid_query( reasm->xid, xid2, NULL )->cnt==2UL );
+  FD_TEST( xid_query( reasm->xid, xid2, NULL )->idx==pool_idx( reasm_pool( reasm ), fecd ) );
+
+  fd_reasm_insert( reasm, mrg, mrd, 2UL, 0U, 1U, 32U, 0, 1, 0, NULL, ev );
+  fd_reasm_publish( reasm, mrg, NULL );
+  FD_TEST( !xid_query( reasm->xid, xid2, NULL ) );
+
+  fd_reasm_delete( fd_reasm_leave( reasm ) );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
 int
 LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {
+  if( FD_UNLIKELY( size && data[ 0 ]==0xf0U ) ) {
+    run_xid_evict_seed();
+    return 0;
+  }
+
   fuzz_cursor_t cur = { .data = data, .data_sz = size, .data_off = 0UL };
 
   fd_hash_t root_key[1];

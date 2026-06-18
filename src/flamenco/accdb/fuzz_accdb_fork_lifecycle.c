@@ -577,6 +577,36 @@ fuzz_snapshot_incremental_revert( fuzz_env_t *    env,
   FD_FUZZ_MUST_BE_COVERED;
 }
 
+static void
+fuzz_duplicate_snapshot_batch_seed( fuzz_env_t * env ) {
+  uchar const * pks[ 3UL ] = { env->key[ 0 ], env->key[ 1 ], env->key[ 0 ] };
+  ulong slots      [ 3UL ] = { 77UL, 77UL, 77UL };
+  ulong lamports   [ 3UL ] = { 11UL, 22UL, 33UL };
+  ulong data_lens  [ 3UL ] = { 0UL, 0UL, 0UL };
+  int   executable [ 3UL ] = { 0, 0, 0 };
+
+  ulong ignored           = ULONG_MAX;
+  ulong replaced          = ULONG_MAX;
+  ulong loaded            = ULONG_MAX;
+  ulong replaced_lamports = ULONG_MAX;
+  ulong ignored_lamports  = ULONG_MAX;
+
+  fd_accdb_snapshot_load_begin( env->accdb );
+  fd_log_level_core_set( 4 );
+  int rc = fd_accdb_snapshot_write_batch( env->accdb, SENTINEL, 3UL,
+                                          pks, slots, lamports, data_lens,
+                                          executable, &ignored, &replaced,
+                                          &loaded, &replaced_lamports,
+                                          &ignored_lamports );
+  fd_log_level_core_set( 3 );
+  fd_accdb_snapshot_load_end( env->accdb );
+
+  FD_TEST( rc==-1 );
+  FD_TEST( !fd_accdb_exists( env->accdb, env->root, env->key[ 0 ] ) );
+  FD_TEST( !fd_accdb_exists( env->accdb, env->root, env->key[ 1 ] ) );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
 int
 LLVMFuzzerInitialize( int *    argc,
                       char *** argv ) {
@@ -598,6 +628,12 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   fuzz_cursor_t cur = { .cur = data, .rem = size };
   fuzz_setup( fuzz_env );
+
+  if( FD_UNLIKELY( data[ 0 ]==0xf0U ) ) {
+    fuzz_duplicate_snapshot_batch_seed( fuzz_env );
+    fuzz_teardown( fuzz_env );
+    return 0;
+  }
 
   ulong action_cnt = 1UL + fuzz_bounded( &cur, FUZZ_MAX_ACTIONS );
   for( ulong action_idx=0UL; (action_idx<action_cnt) & !!cur.rem; action_idx++ ) {

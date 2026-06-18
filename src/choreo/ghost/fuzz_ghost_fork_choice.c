@@ -417,6 +417,39 @@ fuzz_action_publish( fuzz_case_t *  c,
   FD_FUZZ_MUST_BE_COVERED;
 }
 
+static void
+run_pruned_voter_replay_seed( fuzz_case_t *  c,
+                              fuzz_cursor_t * cur ) {
+  fd_ghost_blk_t * parent = fuzz_insert_block( c, c->root_idx, 1UL, cur );
+  FD_TEST( parent );
+
+  fd_ghost_blk_t * winner = fuzz_insert_block( c, 1UL, 2UL, cur );
+  fd_ghost_blk_t * loser  = fuzz_insert_block( c, 1UL, 2UL, cur );
+  fd_ghost_blk_t * child  = fuzz_insert_block( c, 2UL, 3UL, cur );
+  FD_TEST( winner && loser && child );
+
+  fd_pubkey_t vote_acc = fuzz_pubkey( 0UL );
+  FD_TEST( fd_ghost_count_vote( c->ghost, loser, &vote_acc, 7UL, loser->slot )==FD_GHOST_SUCCESS );
+  c->voter[ 0 ].active  = 1;
+  c->voter[ 0 ].blk_idx = 3UL;
+  c->voter[ 0 ].slot    = loser->slot;
+  c->voter[ 0 ].stake   = 7UL;
+
+  fd_ghost_publish( c->ghost, winner );
+  fuzz_reconcile_publish( c, 2UL );
+  FD_TEST( !fd_ghost_query( c->ghost, &loser->id ) );
+  FD_TEST( !c->voter[ 0 ].active );
+
+  FD_TEST( fd_ghost_count_vote( c->ghost, child, &vote_acc, 11UL, child->slot )==FD_GHOST_SUCCESS );
+  c->voter[ 0 ].active  = 1;
+  c->voter[ 0 ].blk_idx = 4UL;
+  c->voter[ 0 ].slot    = child->slot;
+  c->voter[ 0 ].stake   = 11UL;
+
+  fuzz_check( c );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
 int
 LLVMFuzzerInitialize( int *    argc,
                       char *** argv ) {
@@ -471,6 +504,12 @@ LLVMFuzzerTestOneInput( uchar const * data,
   c.blk[ 0 ].live       = 1;
 
   FD_TEST( fd_ghost_init( c.ghost, 0UL, c.blk[ 0 ].slot, &c.blk[ 0 ].id ) );
+
+  if( FD_UNLIKELY( size && data[ 0 ]==0xf0U ) ) {
+    run_pruned_voter_replay_seed( &c, &cur );
+    fd_ghost_delete( fd_ghost_leave( c.ghost ) );
+    return 0;
+  }
 
   ulong action_cnt = 1UL + fuzz_bounded( &cur, FUZZ_ACTION_MAX );
   for( ulong i=0UL; i<action_cnt; i++ ) {

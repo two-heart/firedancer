@@ -621,6 +621,66 @@ fuzz_execute_op( fuzz_env_t *       env,
 }
 
 static void
+run_sentinel_parent_seed( void ) {
+  fd_forest_t * forest =
+    fd_forest_join( fd_forest_new( g_forest_mem, FUZZ_ELE_MAX, 0x5e1171e1UL ) );
+  FD_TEST( forest );
+  fd_forest_init( forest, FUZZ_SLOT_BASE );
+
+  ulong parent = FUZZ_SLOT_BASE;
+  ulong slot   = FUZZ_SLOT_BASE + 2UL;
+  FD_TEST( fd_forest_blk_insert( forest, slot, ULONG_MAX, NULL ) );
+  FD_TEST( fd_forest_subtrees_ele_query( fd_forest_subtrees( forest ), &slot, NULL, fd_forest_pool( forest ) ) );
+
+  FD_TEST( fd_forest_blk_insert( forest, slot, parent, NULL ) );
+  FD_TEST( fd_forest_query( forest, slot )->parent_slot==parent );
+  FD_TEST( !fd_forest_subtrees_ele_query( fd_forest_subtrees( forest ), &slot, NULL, fd_forest_pool( forest ) ) );
+
+  /* Once connected, later stale parent suggestions must not rewrite the
+     parent.  This covers the historical sentinel parent-update bug
+     without requiring a large generated program. */
+  FD_TEST( fd_forest_blk_insert( forest, slot, parent+1UL, NULL ) );
+  FD_TEST( fd_forest_query( forest, slot )->parent_slot==parent );
+  FD_TEST( !fd_forest_verify( forest ) );
+
+  fd_forest_delete( fd_forest_leave( forest ) );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
+static void
+run_buffered_idx_seed( void ) {
+  fd_forest_t * forest =
+    fd_forest_join( fd_forest_new( g_forest_mem, FUZZ_ELE_MAX, 0xb0ff1d1dUL ) );
+  FD_TEST( forest );
+  fd_forest_init( forest, FUZZ_SLOT_BASE );
+
+  ulong slot = FUZZ_SLOT_BASE + 1UL;
+  fd_hash_t mr_a  = (fd_hash_t){ .key = { 1U } };
+  fd_hash_t cmr_a = (fd_hash_t){ .key = { 1U } };
+  fd_hash_t mr_b  = (fd_hash_t){ .key = { 2U } };
+  fd_hash_t cmr_b = (fd_hash_t){ .key = { 2U } };
+
+  FD_TEST( fd_forest_blk_insert( forest, slot, FUZZ_SLOT_BASE, NULL ) );
+  for( uint i=0U; i<32U; i++ )
+    fd_forest_data_shred_insert( forest, slot, FUZZ_SLOT_BASE, i, 0U, 0, 0, SHRED_SRC_TURBINE, &mr_a, &cmr_a );
+  for( uint i=32U; i<64U; i++ )
+    fd_forest_data_shred_insert( forest, slot, FUZZ_SLOT_BASE, i, 32U, 0, 0, SHRED_SRC_TURBINE, &mr_b, &cmr_b );
+
+  fd_forest_blk_t * ele = fd_forest_query( forest, slot );
+  FD_TEST( ele );
+  FD_TEST( ele->buffered_idx==63U );
+
+  fd_forest_data_shred_insert( forest, slot, FUZZ_SLOT_BASE, 31U, 0U, 1, 0, SHRED_SRC_REPAIR, &mr_a, &cmr_a );
+  ele = fd_forest_query( forest, slot );
+  FD_TEST( ele->complete_idx==31U );
+  FD_TEST( ele->buffered_idx<=ele->complete_idx );
+  FD_TEST( !fd_forest_verify( forest ) );
+
+  fd_forest_delete( fd_forest_leave( forest ) );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+
+static void
 fuzz_cleanup( void ) {
   if( FD_LIKELY( g_wksp ) ) {
     fd_wksp_delete_anonymous( g_wksp );
@@ -665,6 +725,15 @@ LLVMFuzzerInitialize( int *    pargc,
 int
 LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         data_sz ) {
+  if( FD_UNLIKELY( data_sz && data[ 0 ]==0xf0U ) ) {
+    run_sentinel_parent_seed();
+    return 0;
+  }
+  if( FD_UNLIKELY( data_sz && data[ 0 ]==0xf1U ) ) {
+    run_buffered_idx_seed();
+    return 0;
+  }
+
   fuzz_cursor_t cur = {
     .data     = data,
     .data_sz  = data_sz,

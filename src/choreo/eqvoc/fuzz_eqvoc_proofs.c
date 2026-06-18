@@ -35,6 +35,7 @@ enum {
   MODE_BAD_CHUNK_IDX,
   MODE_BAD_FROM,
   MODE_OLD_SLOT,
+  MODE_OUTER_SLOT_MISMATCH,
   MODE_SIGCHECK,
   MODE_CNT
 };
@@ -288,6 +289,7 @@ LLVMFuzzerTestOneInput( uchar const * data,
   if( mode==MODE_BAD_CHUNK_CNT ) chunks[ fuzz_range( &r, FD_EQVOC_CHUNK_CNT ) ].num_chunks = (uchar)( FD_EQVOC_CHUNK_CNT + 1UL + fuzz_range( &r, 4UL ) );
   if( mode==MODE_BAD_CHUNK_IDX ) chunks[ fuzz_range( &r, FD_EQVOC_CHUNK_CNT ) ].chunk_index = (uchar)( FD_EQVOC_CHUNK_CNT + fuzz_range( &r, 4UL ) );
   if( mode==MODE_OLD_SLOT      ) for( ulong i=0UL; i<FD_EQVOC_CHUNK_CNT; i++ ) chunks[ i ].slot = FUZZ_ROOT;
+  if( mode==MODE_OUTER_SLOT_MISMATCH ) for( ulong i=0UL; i<FD_EQVOC_CHUNK_CNT; i++ ) chunks[ i ].slot = slot + 1UL + fuzz_range( &r, 3UL );
 
   fd_eqvoc_t * eqvoc = fd_eqvoc_join( fd_eqvoc_new( fuzz_eqvoc_mem, FUZZ_DUP_MAX, FUZZ_FEC_MAX, FUZZ_PER_VTR_MAX, FUZZ_VTR_MAX, fuzz_ulong( &r ) ) );
   fd_eqvoc_update_voters( eqvoc, voters, 2UL );
@@ -321,6 +323,11 @@ LLVMFuzzerTestOneInput( uchar const * data,
     default: abort();
     }
     if( FD_UNLIKELY( last_err!=FD_EQVOC_IGNORED ) ) break;
+  }
+
+  if( mode==MODE_OUTER_SLOT_MISMATCH ) {
+    FD_TEST( !fd_eqvoc_proof_verified( eqvoc, slot ) );
+    FD_TEST( !fd_eqvoc_proof_verified( eqvoc, chunks[ 0 ].slot ) );
   }
 
   if( FD_UNLIKELY( last_err==FD_EQVOC_SUCCESS ) ) {
