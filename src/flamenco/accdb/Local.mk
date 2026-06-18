@@ -11,6 +11,8 @@ $(call run-unit-test,test_accdb)
 $(call make-unit-test,test_accdb_cache,test_accdb_cache,fd_flamenco fd_ballet fd_util)
 $(call run-unit-test,test_accdb_cache)
 
+$(call make-fuzz-test,fuzz_accdb_fork_lifecycle,fuzz_accdb_fork_lifecycle,fd_flamenco fd_ballet fd_util)
+
 $(call make-unit-test,bench_accdb,bench_accdb,fd_flamenco fd_ballet fd_util)
 $(call make-unit-test,bench_accdb_hotread,bench_accdb_hotread,fd_flamenco fd_ballet fd_util)
 $(call make-unit-test,bench_accdb_txn,bench_accdb_txn,fd_flamenco fd_ballet fd_util)
