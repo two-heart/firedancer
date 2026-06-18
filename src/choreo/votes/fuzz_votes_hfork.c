@@ -305,7 +305,7 @@ model_hfork_compare_pair( fuzz_model_t const *       m,
                           ulong                      total_stake ) {
   our_bank_model_t const * ours = &m->our_bank[ p->block_idx ];
   if( FD_UNLIKELY( !ours->known                         ) ) return FD_HFORK_SUCCESS;
-  if( FD_UNLIKELY( p->stake*100UL < 52UL*total_stake    ) ) return FD_HFORK_SUCCESS;
+  if( FD_UNLIKELY( (uint128)p->stake*100U < (uint128)52U*total_stake ) ) return FD_HFORK_SUCCESS;
   if( FD_UNLIKELY( ours->dead || ours->bank_idx!=p->bank_idx ) ) return FD_HFORK_ERR_MISMATCHED;
   return FD_HFORK_SUCCESS_MATCHED;
 }
@@ -607,6 +607,7 @@ apply_record_bank_hash( fd_hfork_t *    hfork,
   ulong block_idx = fuzz_bounded( r, FUZZ_BLOCK_MAX );
   ulong bank_idx  = fuzz_bounded( r, FUZZ_BANK_MAX );
   int   dead      = !(fuzz_u8( r ) & 3U);
+  if( FD_UNLIKELY( m->our_bank[ block_idx ].known ) ) return;
 
   fd_hash_t block_id[ 1 ];
   fd_hash_t bank_hash[ 1 ];

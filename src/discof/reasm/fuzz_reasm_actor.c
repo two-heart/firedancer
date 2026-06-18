@@ -28,8 +28,6 @@
 #define FUZZ_OP_QUERY   5U
 #define FUZZ_OP_DRAIN   6U
 #define FUZZ_OP_CNT     7U
-#define FUZZ_OP_STABLE_CNT 5U
-
 #define FUZZ_PARENT_ROOT ((int)-1)
 #define FUZZ_PARENT_FAKE ((int)-2)
 
@@ -324,16 +322,17 @@ fuzz_pick_node( fuzz_cursor_t * cur ) {
 }
 
 static fd_reasm_fec_t *
-fuzz_pick_present( fuzz_cursor_t * cur,
-                   fuzz_model_t *  model,
-                   fd_reasm_t *    reasm,
-                   int             require_connected,
-                   int             exclude_root ) {
+fuzz_pick_slot_complete_present( fuzz_cursor_t * cur,
+                                 fuzz_model_t *  model,
+                                 fd_reasm_t *    reasm,
+                                 int             require_connected,
+                                 int             exclude_root ) {
   ulong start = fuzz_pick_node( cur );
   fd_reasm_fec_t * root = fd_reasm_root( reasm );
 
   for( ulong j=0UL; j<FUZZ_NODE_MAX; j++ ) {
     ulong i = (start+j) % FUZZ_NODE_MAX;
+    if( FD_UNLIKELY( !fuzz_desc[ i ].slot_complete ) ) continue;
     fd_reasm_fec_t * fec = fd_reasm_query( reasm, model->node[ i ].key );
     if( FD_UNLIKELY( !fec ) ) continue;
     if( FD_UNLIKELY( exclude_root && fec==root ) ) continue;
@@ -439,9 +438,12 @@ fuzz_confirm( fuzz_cursor_t * cur,
     return;
   }
 
-  ulong i = fuzz_pick_node( cur );
-  fd_reasm_confirm( reasm, model->node[ i ].key );
-  if( FD_UNLIKELY( fd_reasm_query( reasm, model->node[ i ].key ) ) )
+  fd_reasm_fec_t * fec = fuzz_pick_slot_complete_present( cur, model, reasm, 1, 0 );
+  if( FD_UNLIKELY( !fec ) ) return;
+
+  fd_hash_t key = fec->key;
+  fd_reasm_confirm( reasm, &key );
+  if( FD_UNLIKELY( fd_reasm_query( reasm, &key ) ) )
     FD_FUZZ_MUST_BE_COVERED;
 }
 
@@ -487,8 +489,9 @@ fuzz_publish( fuzz_cursor_t * cur,
   fd_reasm_fec_t * old_root = fd_reasm_root( reasm );
   if( FD_UNLIKELY( !xid_query( reasm->xid, (old_root->slot << 32)|old_root->fec_set_idx, NULL ) ) ) return;
 
-  fd_reasm_fec_t * fec = fuzz_pick_present( cur, model, reasm, 1, 1 );
+  fd_reasm_fec_t * fec = fuzz_pick_slot_complete_present( cur, model, reasm, 1, 1 );
   if( FD_UNLIKELY( !fec ) ) return;
+  if( FD_UNLIKELY( !fec->popped ) ) return;
 
   fd_hash_t key = fec->key;
   fd_reasm_fec_t * root = fd_reasm_publish( reasm, &key, NULL );
@@ -617,15 +620,14 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   ulong op_cnt = 1UL + fuzz_bounded( &cur, FUZZ_OP_MAX );
   for( ulong op_idx=0UL; op_idx<op_cnt; op_idx++ ) {
-    (void)fuzz_remove;
-    (void)fuzz_publish;
-
-    switch( fuzz_u8( &cur ) % FUZZ_OP_STABLE_CNT ) {
+    switch( fuzz_u8( &cur ) % FUZZ_OP_CNT ) {
       case FUZZ_OP_INSERT:  fuzz_insert ( &cur, model, reasm ); break;
       case FUZZ_OP_CONFIRM: fuzz_confirm( &cur, model, reasm ); break;
       case FUZZ_OP_POP:     fuzz_pop_one(       model, reasm ); break;
-      case 3U:              fuzz_query  ( &cur, model, reasm ); break;
-      case 4U:
+      case FUZZ_OP_REMOVE:  fuzz_remove ( &cur, model, reasm ); break;
+      case FUZZ_OP_PUBLISH: fuzz_publish( &cur, model, reasm ); break;
+      case FUZZ_OP_QUERY:   fuzz_query  ( &cur, model, reasm ); break;
+      case FUZZ_OP_DRAIN:
         for( ulong i=0UL; i<4UL && fd_reasm_peek( reasm ); i++ )
           fuzz_pop_one( model, reasm );
         break;

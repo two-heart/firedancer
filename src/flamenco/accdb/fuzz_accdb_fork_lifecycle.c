@@ -220,22 +220,6 @@ fuzz_pick_active( fuzz_env_t const * env,
 }
 
 static fd_accdb_fork_id_t
-fuzz_pick_leaf( fuzz_env_t const * env,
-                fuzz_cursor_t *    cur ) {
-  ulong cnt = 0UL;
-  for( ulong i=0UL; i<FUZZ_MAX_LIVE_SLOTS; i++ )
-    if( env->active[ i ] && !fuzz_has_child( env, (ushort)i ) ) cnt++;
-
-  FD_TEST( cnt );
-  ulong pick = fuzz_bounded( cur, cnt );
-  for( ulong i=0UL; i<FUZZ_MAX_LIVE_SLOTS; i++ ) {
-    if( FD_UNLIKELY( !env->active[ i ] || fuzz_has_child( env, (ushort)i ) ) ) continue;
-    if( FD_UNLIKELY( !pick-- ) ) return (fd_accdb_fork_id_t){ .val = (ushort)i };
-  }
-  FD_LOG_ERR(( "unreachable" ));
-}
-
-static fd_accdb_fork_id_t
 fuzz_pick_nonroot( fuzz_env_t const * env,
                    fuzz_cursor_t *    cur ) {
   ulong cnt = 0UL;
@@ -405,6 +389,14 @@ fuzz_attach_child( fuzz_env_t *    env,
   fuzz_assert_fork_links( env );
   FD_FUZZ_MUST_BE_COVERED;
   return child;
+}
+
+static fd_accdb_fork_id_t
+fuzz_pick_exec_leaf( fuzz_env_t *    env,
+                     fuzz_cursor_t * cur ) {
+  fd_accdb_fork_id_t fork_id = fuzz_pick_nonroot_leaf( env, cur );
+  if( FD_UNLIKELY( fork_id.val!=USHORT_MAX ) ) return fork_id;
+  return fuzz_attach_child( env, cur );
 }
 
 static void
@@ -647,13 +639,15 @@ LLVMFuzzerTestOneInput( uchar const * data,
       }
 
       case 1UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( fuzz_env, &cur );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_exec_leaf( fuzz_env, &cur );
+        if( FD_UNLIKELY( fork_id.val==USHORT_MAX ) ) break;
         fuzz_write_acquire( fuzz_env, &cur, fork_id, key_idx, 1 );
         break;
       }
 
       case 2UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( fuzz_env, &cur );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_exec_leaf( fuzz_env, &cur );
+        if( FD_UNLIKELY( fork_id.val==USHORT_MAX ) ) break;
         fuzz_write_acquire( fuzz_env, &cur, fork_id, key_idx, 0 );
         break;
       }
@@ -671,7 +665,8 @@ LLVMFuzzerTestOneInput( uchar const * data,
       }
 
       case 5UL: {
-        fd_accdb_fork_id_t fork_id = fuzz_pick_leaf( fuzz_env, &cur );
+        fd_accdb_fork_id_t fork_id = fuzz_pick_exec_leaf( fuzz_env, &cur );
+        if( FD_UNLIKELY( fork_id.val==USHORT_MAX ) ) break;
         fuzz_write_one( fuzz_env, &cur, fork_id, key_idx );
         break;
       }

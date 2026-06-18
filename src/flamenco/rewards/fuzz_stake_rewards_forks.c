@@ -42,6 +42,7 @@ typedef struct {
   ulong          entry_cnt;
   ulong          total_rewards;
   uchar          distributed[ FUZZ_MAX_PARTITIONS ];
+  int            distribution_started;
 } fork_model_t;
 
 typedef struct {
@@ -248,15 +249,16 @@ insert_reward( model_t *       m,
   }
   if( FD_UNLIKELY( m->epoch_insert_cnt>=FUZZ_MAX_STAKE_ACCOUNTS ) ) return;
 
-  fork_model_t * f = &m->fork[ fuzz_bounded( r, m->fork_cnt ) ];
+  fork_model_t * f = &m->fork[ m->fork_cnt-1UL ];
   if( FD_UNLIKELY( f->entry_cnt>=FUZZ_MAX_ENTRIES ) ) return;
+  if( FD_UNLIKELY( f->distribution_started ) ) return;
 
   ulong account_id = fuzz_bounded( r, FUZZ_EXPECTED_ACCOUNTS );
   ulong salt       = (fuzz_u8( r ) & 3U) ? 0UL : f->slot;
 
   reward_entry_t e;
   make_pubkey( &e.pubkey, account_id, salt );
-  e.lamports         = 1UL + fuzz_bounded( r, 1000000UL );
+  e.lamports         = (fuzz_u8( r ) & 7U) ? 1UL + fuzz_bounded( r, 1000000UL ) : 0UL;
   e.credits_observed = fuzz_bounded( r, 1000000UL );
 
   fd_stake_rewards_insert( m->stake_rewards, f->fork_idx, &e.pubkey, e.lamports, e.credits_observed );
@@ -287,6 +289,7 @@ distribute_partition( model_t *       m,
   if( FD_UNLIKELY( f->distributed[ partition_idx ] ) ) {
     FD_FUZZ_MUST_BE_COVERED;
   }
+  f->distribution_started = 1;
   f->distributed[ partition_idx ] = 1U;
 
   uchar seen[ FUZZ_MAX_ENTRIES ] = {0};

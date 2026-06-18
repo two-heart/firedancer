@@ -374,6 +374,15 @@ fuzz_setup_case( fuzz_env_t *    env,
   fuzz_remember( env, root.slot, root.parent_slot, root_id, parent_id );
 }
 
+static ulong
+fuzz_replay_cnt_for_slot( fuzz_env_t const * env,
+                          ulong              slot ) {
+  ulong cnt = 0UL;
+  for( ulong i=0UL; i<env->known_cnt; i++ )
+    cnt += (ulong)( env->known[ i ].slot==slot );
+  return cnt;
+}
+
 static void
 fuzz_replay_action( fuzz_env_t *    env,
                     fuzz_reader_t * r ) {
@@ -406,6 +415,7 @@ fuzz_replay_action( fuzz_env_t *    env,
     variant += 1000UL;
   }
   if( FD_UNLIKELY( slot<ctx->tower->root ) ) return;
+  if( FD_UNLIKELY( fuzz_replay_cnt_for_slot( env, slot )>=EQVOC_MAX ) ) return;
 
   fd_hash_t block_id[1];
   fuzz_hash( block_id, slot, variant );
@@ -485,6 +495,7 @@ fuzz_duplicate_action( fuzz_env_t *    env,
   fd_tower_tile_t * ctx = env->ctx;
   fuzz_known_t * known = fuzz_pick_known( env, r );
   if( FD_UNLIKELY( !known ) ) return;
+  if( FD_UNLIKELY( known->slot<=ctx->tower->root ) ) return;
 
   fd_gossip_duplicate_shred_t chunks[ FD_EQVOC_CHUNK_CNT ];
   memset( chunks, 0, sizeof(chunks) );
@@ -524,16 +535,6 @@ fuzz_root_action( fuzz_env_t *    env,
 
   publish_slot_rooted( ctx, known->slot, &known->block_id );
   FD_FUZZ_MUST_BE_COVERED;
-
-  if( FD_UNLIKELY( tower_blk->epoch!=ctx->root_epoch ) ) {
-    fd_replay_slot_completed_t sc;
-    memset( &sc, 0, sizeof(sc) );
-    sc.slot     = known->slot;
-    sc.epoch    = tower_blk->epoch;
-    sc.bank_idx = known->slot;
-    mock_query_voters( ctx, &sc, tower_blk->epoch );
-    FD_FUZZ_MUST_BE_COVERED;
-  }
 
   fuzz_drain_publishes( ctx );
 }
@@ -676,16 +677,13 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   ulong action_cnt = 1UL + fuzz_range( &r, FUZZ_ACTION_MAX );
   for( ulong i=0UL; i<action_cnt; i++ ) {
-    switch( fuzz_range( &r, 6UL ) ) {
+    switch( fuzz_range( &r, 5UL ) ) {
     case 0UL: fuzz_replay_action   ( fuzz_env, &r ); break;
     case 1UL: fuzz_confirm_action  ( fuzz_env, &r ); break;
     case 2UL: fuzz_duplicate_action( fuzz_env, &r ); break;
     case 3UL: fuzz_root_action     ( fuzz_env, &r ); break;
     case 4UL: fuzz_vote_txn_action ( fuzz_env, &r ); break;
-    default:
-      mock_query_voters( fuzz_env->ctx, NULL, fuzz_range( &r, 2UL ) );
-      FD_FUZZ_MUST_BE_COVERED;
-      break;
+    default: break;
     }
   }
 

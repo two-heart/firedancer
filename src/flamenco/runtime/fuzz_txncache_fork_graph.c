@@ -95,10 +95,11 @@ hash_from_seed( fd_hash_t * h,
                 ulong       tag,
                 ulong       a,
                 ulong       b ) {
-  h->ul[ 0 ] = 0x243f6a8885a308d3UL ^ tag;
-  h->ul[ 1 ] = 0x13198a2e03707344UL ^ (0x9e3779b97f4a7c15UL*a);
-  h->ul[ 2 ] = 0xa4093822299f31d0UL ^ (0xbf58476d1ce4e5b9UL*b);
-  h->ul[ 3 ] = 0x082efa98ec4e6c89UL ^ (tag + 0x94d049bb133111ebUL*(a+b+1UL));
+  ulong seed = fd_ulong_hash( tag ^ (0x9e3779b97f4a7c15UL*a) ^ fd_ulong_bswap( b+1UL ) );
+  h->ul[ 0 ] = 0x243f6a8885a308d3UL ^ seed;
+  h->ul[ 1 ] = 0x13198a2e03707344UL ^ fd_ulong_hash( seed + a );
+  h->ul[ 2 ] = 0xa4093822299f31d0UL ^ fd_ulong_hash( seed + b );
+  h->ul[ 3 ] = 0x082efa98ec4e6c89UL ^ fd_ulong_hash( seed + tag + a + b );
 }
 
 static uchar

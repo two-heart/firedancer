@@ -301,6 +301,17 @@ fuzz_check( fuzz_case_t * c ) {
 }
 
 static void
+fuzz_eqvoc_same_slot_alternatives( fuzz_case_t * c,
+                                   ulong         canonical_idx ) {
+  ulong slot = c->blk[ canonical_idx ].slot;
+  for( ulong i=0UL; i<c->blk_cnt; i++ ) {
+    if( FD_UNLIKELY( i==canonical_idx || !c->blk[ i ].live || c->blk[ i ].slot!=slot ) ) continue;
+    fd_ghost_blk_t * alt = fd_ghost_query( c->ghost, &c->blk[ i ].id );
+    if( FD_LIKELY( alt && alt->valid ) ) fd_ghost_eqvoc( c->ghost, &c->blk[ i ].id );
+  }
+}
+
+static void
 fuzz_action_insert( fuzz_case_t *  c,
                     fuzz_cursor_t * cur ) {
   if( FD_UNLIKELY( c->blk_cnt>=FUZZ_BLK_MAX ) ) return;
@@ -324,11 +335,12 @@ fuzz_action_insert_duplicate( fuzz_case_t *  c,
     return;
   }
 
+  ulong new_idx = c->blk_cnt;
   fd_ghost_blk_t * blk = fuzz_insert_block( c, parent_idx, c->blk[ child_idx ].slot, cur );
   FD_TEST( blk );
 
-  fd_ghost_eqvoc( c->ghost, &c->blk[ child_idx ].id );
-  fd_ghost_eqvoc( c->ghost, &blk->id );
+  fd_ghost_confirm( c->ghost, &blk->id );
+  fuzz_eqvoc_same_slot_alternatives( c, new_idx );
 
   FD_FUZZ_MUST_BE_COVERED;
 }
@@ -352,6 +364,7 @@ fuzz_action_confirm( fuzz_case_t *  c,
   int was_invalid = !before->valid;
 
   fd_ghost_confirm( c->ghost, &c->blk[ idx ].id );
+  fuzz_eqvoc_same_slot_alternatives( c, idx );
 
   fd_ghost_blk_t * after = fd_ghost_query( c->ghost, &c->blk[ idx ].id );
   FD_TEST( after );

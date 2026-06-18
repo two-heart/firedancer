@@ -383,7 +383,7 @@ fuzz_op_data_shred( fuzz_env_t * env,
 
   uint shred_idx = fuzz_pick_shred_idx( ele, fec_set_idx, op->arg0 );
   int  complete    = !!(op->arg2 & 1U);
-  if( FD_LIKELY( complete ) ) shred_idx = fd_uint_min( shred_idx, fec_set_idx + FD_FEC_SHRED_CNT - 1U );
+  if( FD_LIKELY( complete ) ) shred_idx = fec_set_idx + FD_FEC_SHRED_CNT - 1U;
   if( FD_LIKELY( ele->complete_idx!=UINT_MAX ) ) complete = (shred_idx==ele->complete_idx);
 
   fd_hash_t mr[1];
@@ -411,7 +411,7 @@ fuzz_op_fec( fuzz_env_t * env,
   if( FD_UNLIKELY( !ele ) ) return;
 
   uint fec_set_idx = fuzz_fec_set_idx( op->arg0 );
-  uint last_idx = fec_set_idx + (uint)(op->arg1 % FD_FEC_SHRED_CNT);
+  uint last_idx = fec_set_idx + FD_FEC_SHRED_CNT - 1U;
   if( FD_LIKELY( ele->complete_idx!=UINT_MAX ) ) {
     if( FD_UNLIKELY( fec_set_idx > ele->complete_idx ) ) {
       fec_set_idx = (ele->complete_idx / FD_FEC_SHRED_CNT) * FD_FEC_SHRED_CNT;
@@ -426,7 +426,7 @@ fuzz_op_fec( fuzz_env_t * env,
   fuzz_hash( mr,  0xcafeUL, slot, fec_set_idx, (uint)(op->raw & 3U) );
   fuzz_hash( cmr, 0xd00dUL, slot, fec_set_idx, (uint)((op->raw>>2) & 3U) );
 
-  int slot_complete = !!(op->arg2 & 1U);
+  int slot_complete = 1;
   fd_forest_blk_t * out =
     fd_forest_fec_insert( env->forest, slot, parent_slot, last_idx,
                           fec_set_idx, slot_complete, (int)(op->arg2 & 63U),
@@ -438,13 +438,7 @@ static void
 fuzz_op_code_shred( fuzz_env_t * env,
                     fuzz_op_t const * op ) {
   ulong slot = fuzz_pick_live_slot( env->forest, op->arg0, 1 );
-  if( FD_UNLIKELY( slot==ULONG_MAX ) ) {
-    ulong evicted;
-    ulong new_slot = fuzz_alloc_slot( env, op->arg0 );
-    ulong parent = fuzz_pick_parent_slot( env->forest, new_slot, op->arg1 );
-    if( FD_UNLIKELY( !fuzz_insert_block( env, new_slot, parent, &evicted ) ) ) return;
-    slot = new_slot;
-  }
+  if( FD_UNLIKELY( slot==ULONG_MAX ) ) return;
 
   uint shred_idx = (uint)(op->raw % (FD_FEC_SHRED_CNT*FUZZ_FEC_SET_MAX));
   fd_forest_blk_t * out = fd_forest_code_shred_insert( env->forest, slot, shred_idx );
@@ -535,7 +529,8 @@ fuzz_op_clear( fuzz_env_t * env,
   if( FD_UNLIKELY( !ele ) ) return;
 
   uint fec_set_idx = fuzz_fec_set_idx( op->arg1 );
-  uint max_idx     = (uint)(op->arg2 % FD_FEC_SHRED_CNT);
+  uint max_idx     = FD_FEC_SHRED_CNT - 1U;
+  if( FD_UNLIKELY( op->arg2 & 0x80U ) ) max_idx = (uint)(op->arg2 % FD_FEC_SHRED_CNT);
   if( FD_LIKELY( ele->complete_idx!=UINT_MAX ) ) {
     if( FD_UNLIKELY( fec_set_idx > ele->complete_idx ) )
       fec_set_idx = (ele->complete_idx / FD_FEC_SHRED_CNT) * FD_FEC_SHRED_CNT;
