@@ -1,6 +1,7 @@
 #include "fd_txncache.h"
 #include "fd_txncache_private.h"
 #include "../../util/log/fd_log.h"
+#include "../../util/racesan/fd_racesan_target.h"
 
 struct blockcache {
   fd_txncache_blockcache_shmem_t * shmem;
@@ -159,19 +160,24 @@ static fd_txncache_txnpage_t *
 fd_txncache_ensure_txnpage( fd_txncache_t * tc,
                             blockcache_t *  blockcache ) {
   ushort page_cnt = blockcache->shmem->pages_cnt;
+  fd_racesan_hook( "txncache_ensure:post_pages_cnt" );
   if( FD_UNLIKELY( page_cnt>tc->shmem->txnpages_per_blockhash_max ) ) return NULL;
 
   if( FD_LIKELY( page_cnt ) ) {
     ushort txnpage_idx = blockcache->pages[ page_cnt-1 ];
+    fd_racesan_hook( "txncache_ensure:post_tail_page" );
     ushort txnpage_free = tc->txnpages[ txnpage_idx ].free;
+    fd_racesan_hook( "txncache_ensure:post_tail_free" );
     if( FD_LIKELY( txnpage_free ) ) return &tc->txnpages[ txnpage_idx ];
   }
 
   if( FD_UNLIKELY( page_cnt==tc->shmem->txnpages_per_blockhash_max ) ) return NULL;
   if( FD_LIKELY( FD_ATOMIC_CAS( &blockcache->pages[ page_cnt ], (ushort)USHORT_MAX, (ushort)(USHORT_MAX-1UL) )==(ushort)USHORT_MAX ) ) {
+    fd_racesan_hook( "txncache_ensure:post_page_claim" );
     ulong txnpages_free_cnt = tc->shmem->txnpages_free_cnt;
     for(;;) {
       if( FD_UNLIKELY( !txnpages_free_cnt ) ) return NULL;
+      fd_racesan_hook( "txncache_ensure:pre_free_cas" );
       ulong old_txnpages_free_cnt = FD_ATOMIC_CAS( &tc->shmem->txnpages_free_cnt, (ushort)txnpages_free_cnt, (ushort)(txnpages_free_cnt-1UL) );
       if( FD_LIKELY( old_txnpages_free_cnt==txnpages_free_cnt ) ) break;
       txnpages_free_cnt = old_txnpages_free_cnt;
@@ -182,13 +188,17 @@ fd_txncache_ensure_txnpage( fd_txncache_t * tc,
     fd_txncache_txnpage_t * txnpage = &tc->txnpages[ txnpage_idx ];
     txnpage->free = FD_TXNCACHE_TXNS_PER_PAGE;
     FD_COMPILER_MFENCE();
+    fd_racesan_hook( "txncache_ensure:pre_page_publish" );
     blockcache->pages[ page_cnt ] = txnpage_idx;
     FD_COMPILER_MFENCE();
+    fd_racesan_hook( "txncache_ensure:post_page_publish" );
     blockcache->shmem->pages_cnt = (ushort)(page_cnt+1);
+    fd_racesan_hook( "txncache_ensure:post_pages_publish" );
     return txnpage;
   } else {
     ushort txnpage_idx = blockcache->pages[ page_cnt ];
     while( FD_UNLIKELY( txnpage_idx>=USHORT_MAX-1UL ) ) {
+      fd_racesan_hook( "txncache_ensure:wait_page_publish" );
       txnpage_idx = blockcache->pages[ page_cnt ];
       FD_SPIN_PAUSE();
     }
@@ -206,11 +216,14 @@ fd_txncache_insert_txn( fd_txncache_t *         tc,
 
   for(;;) {
     ushort txnpage_free = txnpage->free;
+    fd_racesan_hook( "txncache_insert:post_free" );
     if( FD_UNLIKELY( !txnpage_free ) ) return 0;
     if( FD_UNLIKELY( FD_ATOMIC_CAS( &txnpage->free, txnpage_free, txnpage_free-1UL )!=txnpage_free ) ) {
+      fd_racesan_hook( "txncache_insert:free_cas_fail" );
       FD_SPIN_PAUSE();
       continue;
     }
+    fd_racesan_hook( "txncache_insert:post_free_cas" );
 
     ulong txn_idx = FD_TXNCACHE_TXNS_PER_PAGE-txnpage_free;
     ulong txnhash_offset = blockcache->shmem->txnhash_offset;
@@ -218,15 +231,20 @@ fd_txncache_insert_txn( fd_txncache_t *         tc,
     txnpage->txns[ txn_idx ]->fork_id = fork_id;
     txnpage->txns[ txn_idx ]->generation = tc->blockcache_pool[ fork_id.val ].shmem->generation;
     FD_COMPILER_MFENCE();
+    fd_racesan_hook( "txncache_insert:pre_head_publish" );
 
     ulong txn_bucket = FD_LOAD( ulong, txnhash+txnhash_offset )%tc->shmem->txn_per_slot_max;
     for(;;) {
       uint head = blockcache->heads[ txn_bucket ];
+      fd_racesan_hook( "txncache_insert:post_head" );
       txnpage->txns[ txn_idx ]->blockcache_next = head;
       FD_COMPILER_MFENCE();
+      fd_racesan_hook( "txncache_insert:pre_head_cas" );
       if( FD_LIKELY( FD_ATOMIC_CAS( &blockcache->heads[ txn_bucket ], head, (uint)(FD_TXNCACHE_TXNS_PER_PAGE*txnpage_idx+txn_idx) )==head ) ) break;
+      fd_racesan_hook( "txncache_insert:head_cas_fail" );
       FD_SPIN_PAUSE();
     }
+    fd_racesan_hook( "txncache_insert:post_head_cas" );
 
     return 1;
   }
@@ -569,11 +587,15 @@ fd_txncache_query( fd_txncache_t *       tc,
 
   ulong txnhash_offset = blockcache->shmem->txnhash_offset;
   ulong head_hash = FD_LOAD( ulong, txnhash+txnhash_offset ) % tc->shmem->txn_per_slot_max;
+  fd_racesan_hook( "txncache_query:pre_head" );
   for( uint head=blockcache->heads[ head_hash ]; head!=UINT_MAX; head=tc->txnpages[ head/FD_TXNCACHE_TXNS_PER_PAGE ].txns[ head%FD_TXNCACHE_TXNS_PER_PAGE ]->blockcache_next ) {
+    fd_racesan_hook( "txncache_query:post_head" );
     fd_txncache_single_txn_t * txn = tc->txnpages[ head/FD_TXNCACHE_TXNS_PER_PAGE ].txns[ head%FD_TXNCACHE_TXNS_PER_PAGE ];
+    fd_racesan_hook( "txncache_query:post_txn_ptr" );
 
     blockcache_t const * txn_fork = &tc->blockcache_pool[ txn->fork_id.val ];
     int descends = (txn->fork_id.val==fork_id.val || descends_set_test( fork->descends, txn->fork_id.val )) && txn_fork->shmem->frozen>=0 && txn_fork->shmem->generation==txn->generation;
+    fd_racesan_hook( "txncache_query:post_txn_meta" );
     if( FD_LIKELY( descends && !memcmp( txnhash+txnhash_offset, txn->txnhash, 20UL ) ) ) {
       found = 1;
       break;

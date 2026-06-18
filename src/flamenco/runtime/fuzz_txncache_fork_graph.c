@@ -11,6 +11,10 @@
 
 #include "../../util/fd_util.h"
 #include "../../util/sanitize/fd_fuzz.h"
+#if FD_HAS_RACESAN
+#include "../../util/racesan/fd_racesan_async.h"
+#include "../../util/racesan/fd_racesan_weave.h"
+#endif
 #include "fd_txncache.h"
 #include "fd_txncache_private.h"
 
@@ -20,6 +24,13 @@
 #define FUZZ_MAX_ACTIONS       (96UL)
 #define FUZZ_MAX_MODEL_TXNS    (768UL)
 #define FUZZ_ROOT_HISTORY_MAX  (FD_TXNCACHE_MAX_BLOCKHASH_DISTANCE+FUZZ_MAX_ACTIONS+4UL)
+
+#if FD_HAS_RACESAN
+#define FUZZ_RACESAN_FIBER_MAX (2UL)
+#define FUZZ_RACESAN_STACK_MAX (1UL<<20)
+#define FUZZ_RACESAN_ITER_MAX  (128UL)
+#define FUZZ_RACESAN_STEP_MAX  (100000UL)
+#endif
 
 #define NULL_FORK ((fd_txncache_fork_id_t){ .val = USHORT_MAX })
 
@@ -89,6 +100,21 @@ static uchar * fuzz_ljoin;
 static ulong   fuzz_shmem_fp;
 static ulong   fuzz_ljoin_fp;
 static model_t fuzz_model[ 1 ];
+
+#if FD_HAS_RACESAN
+typedef struct {
+  fd_racesan_async_t async[ 1 ];
+  uchar              stack[ FUZZ_RACESAN_STACK_MAX ] __attribute__((aligned(64)));
+
+  fd_txncache_t *       tc;
+  fd_txncache_fork_id_t fork_id;
+  fd_hash_t             blockhash[ 1 ];
+  fd_hash_t             txnhash[ 1 ];
+  int                   query_result;
+} fuzz_racesan_fiber_t;
+
+static fuzz_racesan_fiber_t fuzz_racesan_fiber[ FUZZ_RACESAN_FIBER_MAX ];
+#endif
 
 static void
 hash_from_seed( fd_hash_t * h,
@@ -747,6 +773,92 @@ run_page_exhaustion_seed( void ) {
   FD_FUZZ_MUST_BE_COVERED;
 }
 
+#if FD_HAS_RACESAN
+static void
+fuzz_racesan_insert_exec( void * _ctx ) {
+  fuzz_racesan_fiber_t * fiber = _ctx;
+  fd_txncache_insert( fiber->tc,
+                      fiber->fork_id,
+                      fiber->blockhash->uc,
+                      fiber->txnhash->uc );
+}
+
+static void
+fuzz_racesan_query_exec( void * _ctx ) {
+  fuzz_racesan_fiber_t * fiber = _ctx;
+  fiber->query_result = fd_txncache_query( fiber->tc,
+                                           fiber->fork_id,
+                                           fiber->blockhash->uc,
+                                           fiber->txnhash->uc );
+}
+
+static void
+run_racesan_insert_query_seed( uchar const * data,
+                               ulong         size ) {
+  fd_racesan_weave_t weave[ 1 ];
+  fd_racesan_weave_new( weave );
+
+  fd_racesan_async_new( fuzz_racesan_fiber[ 0 ].async,
+                        fuzz_racesan_fiber[ 0 ].stack,
+                        FUZZ_RACESAN_STACK_MAX,
+                        fuzz_racesan_insert_exec,
+                        &fuzz_racesan_fiber[ 0 ] );
+  fd_racesan_weave_add( weave, fuzz_racesan_fiber[ 0 ].async );
+
+  fd_racesan_async_new( fuzz_racesan_fiber[ 1 ].async,
+                        fuzz_racesan_fiber[ 1 ].stack,
+                        FUZZ_RACESAN_STACK_MAX,
+                        fuzz_racesan_query_exec,
+                        &fuzz_racesan_fiber[ 1 ] );
+  fd_racesan_weave_add( weave, fuzz_racesan_fiber[ 1 ].async );
+
+  ulong seed = size ^ 0x8ace5a7a00000000UL;
+  for( ulong i=1UL; i<size; i++ ) seed = fd_ulong_hash( seed ^ ((ulong)data[ i ] << ((i&7UL)*8UL)) );
+  ulong iter = 1UL + (seed % FUZZ_RACESAN_ITER_MAX);
+
+  for( ulong i=0UL; i<iter; i++ ) {
+    fd_txncache_t * tc = setup_cache( 4UL, 256UL );
+
+    fd_hash_t root_hash[ 1 ];
+    hash_from_seed( root_hash, 0xB10C000000000000UL, 0UL, i );
+
+    fd_txncache_fork_id_t root = fd_txncache_attach_child( tc, NULL_FORK );
+    fd_txncache_finalize_fork( tc, root, 0UL, root_hash->uc );
+    fd_txncache_fork_id_t child = fd_txncache_attach_child( tc, root );
+
+    fd_hash_t txnhash[ 1 ];
+    hash_from_seed( txnhash, 0x7A58000000000000UL, seed+i, i );
+
+    for( ulong j=0UL; j<FUZZ_RACESAN_FIBER_MAX; j++ ) {
+      fuzz_racesan_fiber[ j ].tc           = tc;
+      fuzz_racesan_fiber[ j ].fork_id      = child;
+      *fuzz_racesan_fiber[ j ].blockhash   = *root_hash;
+      *fuzz_racesan_fiber[ j ].txnhash     = *txnhash;
+      fuzz_racesan_fiber[ j ].query_result = -1;
+    }
+
+    fd_racesan_weave_exec_rand( weave, seed+i, FUZZ_RACESAN_STEP_MAX );
+    FD_TEST( !weave->rem_cnt );
+    FD_TEST( fuzz_racesan_fiber[ 1 ].query_result==0 ||
+             fuzz_racesan_fiber[ 1 ].query_result==1 );
+    FD_TEST( fd_txncache_query( tc, child, root_hash->uc, txnhash->uc ) );
+  }
+
+  fd_racesan_weave_delete( weave );
+  fd_racesan_async_delete( fuzz_racesan_fiber[ 1 ].async );
+  fd_racesan_async_delete( fuzz_racesan_fiber[ 0 ].async );
+  FD_FUZZ_MUST_BE_COVERED;
+}
+#else
+static void
+run_racesan_insert_query_seed( uchar const * data,
+                               ulong         size ) {
+  (void)data;
+  (void)size;
+  FD_FUZZ_MUST_BE_COVERED;
+}
+#endif
+
 static void
 fuzz_cleanup( void ) {
   free( fuzz_shmem );
@@ -792,6 +904,11 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
   if( data[ 0 ]==0xF1U ) {
     run_page_exhaustion_seed();
+    return 0;
+  }
+
+  if( data[ 0 ]==0xF2U ) {
+    run_racesan_insert_query_seed( data, size );
     return 0;
   }
 
