@@ -58,6 +58,9 @@ ifdef FD_HAS_HOSTED
 $(call make-unit-test,test_txncache,test_txncache,fd_flamenco fd_ballet fd_util)
 ifdef FD_HAS_ATOMIC
 $(call make-fuzz-test,fuzz_txncache_fork_graph,fuzz_txncache_fork_graph,fd_flamenco fd_ballet fd_util)
+ifdef FD_HAS_RACESAN
+$(call make-unit-test,test_txncache_racesan,test_txncache_racesan,fd_flamenco fd_ballet fd_util)
+endif
 endif
 endif
 

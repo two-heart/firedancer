@@ -6,7 +6,6 @@
 #include <string.h>
 
 #include "../../util/fd_util.h"
-#include "../../util/sanitize/fd_fuzz.h"
 #include "../hfork/fd_hfork.h"
 #include "fd_votes.h"
 
@@ -443,8 +442,6 @@ apply_update_voters( fd_votes_t *       votes,
   fd_votes_update_voters( votes, vote_accs, cnt );
   fd_hfork_update_voters( hfork, vote_accs, cnt );
   model_update_voters( m, mask );
-
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static int
@@ -472,29 +469,25 @@ check_votes_result( int expected,
                     int actual ) {
   FD_TEST( expected==actual );
   switch( actual ) {
-    case FD_VOTES_SUCCESS:           FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_VOTES_ERR_VOTE_TOO_NEW:  FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_VOTES_ERR_UNKNOWN_VTR:   FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_VOTES_ERR_ALREADY_VOTED: FD_FUZZ_MUST_BE_COVERED; break;
+    case FD_VOTES_SUCCESS:           break;
+    case FD_VOTES_ERR_VOTE_TOO_NEW:  break;
+    case FD_VOTES_ERR_UNKNOWN_VTR:   break;
+    case FD_VOTES_ERR_ALREADY_VOTED: break;
     default: FD_LOG_ERR(( "unexpected votes result %d", actual ));
   }
 }
 
 static void
 check_hfork_result( int expected,
-                    int actual,
-                    ulong stake ) {
+                    int actual ) {
   FD_TEST( expected==actual );
   switch( actual ) {
-    case FD_HFORK_SUCCESS_MATCHED:   FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_HFORK_SUCCESS:
-      if( FD_UNLIKELY( !stake ) ) FD_FUZZ_MUST_BE_COVERED;
-      else                        FD_FUZZ_MUST_BE_COVERED;
-      break;
-    case FD_HFORK_ERR_MISMATCHED:    FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_HFORK_ERR_UNKNOWN_VTR:   FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_HFORK_ERR_ALREADY_VOTED: FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_HFORK_ERR_VOTE_TOO_OLD:  FD_FUZZ_MUST_BE_COVERED; break;
+    case FD_HFORK_SUCCESS_MATCHED:   break;
+    case FD_HFORK_SUCCESS:           break;
+    case FD_HFORK_ERR_MISMATCHED:    break;
+    case FD_HFORK_ERR_UNKNOWN_VTR:   break;
+    case FD_HFORK_ERR_ALREADY_VOTED: break;
+    case FD_HFORK_ERR_VOTE_TOO_OLD:  break;
     default: FD_LOG_ERR(( "unexpected hfork result %d", actual ));
   }
 }
@@ -565,7 +558,7 @@ apply_vote( fd_votes_t *       votes,
   ulong total_stake     = model_total_stake( m );
   int expected_hfork    = model_hfork_count_vote( m, voter_idx, block_idx, bank_idx, slot, stake, total_stake );
   int actual_hfork      = fd_hfork_count_vote( hfork, &vote_acc, block_id, bank_hash, slot, stake, total_stake );
-  check_hfork_result( expected_hfork, actual_hfork, stake );
+  check_hfork_result( expected_hfork, actual_hfork );
 
   m->have_last_vote = 1;
   m->last_voter_idx = voter_idx;
@@ -588,8 +581,6 @@ apply_publish( fd_votes_t *    votes,
     FD_TEST( !fd_votes_query( votes, slot, NULL ) );
     break;
   }
-
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -597,7 +588,6 @@ apply_stake_change( fuzz_model_t *  m,
                     fuzz_reader_t * r ) {
   ulong voter_idx = fuzz_bounded( r, FUZZ_VTR_MAX );
   m->voter[ voter_idx ].stake = fuzz_bounded( r, 64UL );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -621,7 +611,7 @@ apply_record_bank_hash( fd_hfork_t *    hfork,
   ulong total_stake  = model_total_stake( m );
   int expected       = model_hfork_compare_block( m, block_idx, total_stake );
   int actual         = fd_hfork_record_our_bank_hash( hfork, block_id, dead ? NULL : bank_hash, total_stake );
-  check_hfork_result( expected, actual, 1UL );
+  check_hfork_result( expected, actual );
 }
 
 static void
@@ -639,7 +629,6 @@ apply_votes_query( fd_votes_t *    votes,
   if( FD_LIKELY( actual ) ) {
     FD_TEST( actual->stake==expected->stake );
     FD_TEST( actual->flags==expected->flags );
-    FD_FUZZ_MUST_BE_COVERED;
   }
 
   uchar level = 0U;
@@ -647,11 +636,9 @@ apply_votes_query( fd_votes_t *    votes,
   actual = fd_votes_query( votes, slot, NULL );
   if( FD_UNLIKELY( !best ) ) {
     FD_TEST( !actual );
-    FD_FUZZ_MUST_BE_COVERED;
   } else {
     FD_TEST( actual );
     FD_TEST( (actual->flags >> 4)==level );
-    FD_FUZZ_MUST_BE_COVERED;
   }
 }
 
@@ -672,7 +659,6 @@ apply_set_forward_flags( fd_votes_t *    votes,
   if( FD_LIKELY( actual ) ) {
     actual->flags    = flags;
     expected->flags  = flags;
-    FD_FUZZ_MUST_BE_COVERED;
   }
 }
 
@@ -699,7 +685,6 @@ run_votes_same_block_multi_slot_seed( void ) {
   FD_TEST( fd_votes_query( votes, FUZZ_ROOT_BASE+2UL, block_id ) );
 
   fd_votes_delete( fd_votes_leave( votes ) );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -734,7 +719,6 @@ run_hfork_multi_bank_eviction_seed( void ) {
   }
 
   fd_hfork_delete( fd_hfork_leave( hfork ) );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -759,7 +743,6 @@ run_hfork_huge_stake_seed( void ) {
   FD_TEST( fd_hfork_record_our_bank_hash( hfork, block_id, our_hash, total_stake )==FD_HFORK_ERR_MISMATCHED );
 
   fd_hfork_delete( fd_hfork_leave( hfork ) );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 int

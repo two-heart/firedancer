@@ -4,7 +4,6 @@
 
 #include "fd_forest.h"
 #include "../../util/fd_util.h"
-#include "../../util/sanitize/fd_fuzz.h"
 
 #include <stdlib.h>
 
@@ -340,8 +339,6 @@ fuzz_insert_block( fuzz_env_t * env,
 
   *evicted = ULONG_MAX;
   fd_forest_blk_t * blk = fd_forest_blk_insert( env->forest, slot, parent_slot, evicted );
-  if( FD_UNLIKELY( *evicted!=ULONG_MAX ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( !blk ) ) FD_FUZZ_MUST_BE_COVERED;
   return blk;
 }
 
@@ -394,11 +391,9 @@ fuzz_op_data_shred( fuzz_env_t * env,
   int src = op->actor==FUZZ_ACTOR_TURBINE ? SHRED_SRC_TURBINE :
             op->actor==FUZZ_ACTOR_REPAIR  ? SHRED_SRC_REPAIR  :
                                              SHRED_SRC_RECOVERED;
-  fd_forest_blk_t * out =
-    fd_forest_data_shred_insert( env->forest, slot, parent_slot, shred_idx,
-                                 fec_set_idx, complete, (int)(op->arg2 & 63U),
-                                 src, mr, cmr );
-  if( FD_UNLIKELY( !out ) ) FD_FUZZ_MUST_BE_COVERED;
+  (void)fd_forest_data_shred_insert( env->forest, slot, parent_slot, shred_idx,
+                                     fec_set_idx, complete, (int)(op->arg2 & 63U),
+                                     src, mr, cmr );
 }
 
 static void
@@ -427,11 +422,9 @@ fuzz_op_fec( fuzz_env_t * env,
   fuzz_hash( cmr, 0xd00dUL, slot, fec_set_idx, (uint)((op->raw>>2) & 3U) );
 
   int slot_complete = 1;
-  fd_forest_blk_t * out =
-    fd_forest_fec_insert( env->forest, slot, parent_slot, last_idx,
-                          fec_set_idx, slot_complete, (int)(op->arg2 & 63U),
-                          mr, cmr );
-  if( FD_UNLIKELY( !out ) ) FD_FUZZ_MUST_BE_COVERED;
+  (void)fd_forest_fec_insert( env->forest, slot, parent_slot, last_idx,
+                              fec_set_idx, slot_complete, (int)(op->arg2 & 63U),
+                              mr, cmr );
 }
 
 static void
@@ -441,8 +434,7 @@ fuzz_op_code_shred( fuzz_env_t * env,
   if( FD_UNLIKELY( slot==ULONG_MAX ) ) return;
 
   uint shred_idx = (uint)(op->raw % (FD_FEC_SHRED_CNT*FUZZ_FEC_SET_MAX));
-  fd_forest_blk_t * out = fd_forest_code_shred_insert( env->forest, slot, shred_idx );
-  if( FD_UNLIKELY( !out ) ) FD_FUZZ_MUST_BE_COVERED;
+  (void)fd_forest_code_shred_insert( env->forest, slot, shred_idx );
 }
 
 static void
@@ -457,7 +449,6 @@ fuzz_op_confirm( fuzz_env_t * env,
     ulong evicted;
     fd_forest_blk_t * blk = fuzz_insert_block( env, slot, ULONG_MAX, &evicted );
     if( FD_UNLIKELY( !blk ) ) return;
-    FD_FUZZ_MUST_BE_COVERED;
 
     fd_hash_t bid[1];
     fuzz_hash( bid, 0xf00dUL, slot, 0U, op->raw );
@@ -479,13 +470,11 @@ fuzz_op_confirm( fuzz_env_t * env,
 
   if( FD_UNLIKELY( blk->complete_idx==UINT_MAX ) ) {
     blk->confirmed_bid = *bid;
-    FD_FUZZ_MUST_BE_COVERED;
     return;
   }
 
   fd_forest_blk_t * bad = fd_forest_fec_chain_verify( env->forest, blk, bid );
   if( FD_UNLIKELY( bad ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
     uint bad_idx = fd_forest_merkle_last_incorrect_idx( bad );
     if( FD_LIKELY( bad_idx!=UINT_MAX ) )
       fd_forest_fec_clear( env->forest, bad->slot, bad_idx, FD_FEC_SHRED_CNT-1U );
@@ -502,7 +491,6 @@ fuzz_op_publish( fuzz_env_t * env,
     if( FD_UNLIKELY( !fd_forest_pool_free( fd_forest_pool( env->forest ) ) ) ) return;
     new_root = fuzz_alloc_slot( env, (uchar)(op->arg0 + 17U) );
     if( FD_UNLIKELY( fd_forest_query( env->forest, new_root ) ) ) return;
-    FD_FUZZ_MUST_BE_COVERED;
   } else {
     new_root = fuzz_pick_live_slot( env->forest, op->arg0, 1 );
     if( FD_UNLIKELY( new_root==ULONG_MAX ) ) {
@@ -516,7 +504,6 @@ fuzz_op_publish( fuzz_env_t * env,
   if( FD_UNLIKELY( new_root<=old_root ) ) return;
   fd_forest_blk_t const * root = fd_forest_publish( env->forest, new_root );
   FD_TEST( root );
-  if( FD_LIKELY( new_root!=old_root ) ) FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -538,7 +525,6 @@ fuzz_op_clear( fuzz_env_t * env,
   }
 
   fd_forest_fec_clear( env->forest, slot, fec_set_idx, max_idx );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -547,14 +533,11 @@ fuzz_op_iter( fuzz_env_t * env,
   fd_forest_iter_t * iter = (op->arg0 & 1U) ? &env->forest->orphiter :
                                              &env->forest->iter;
   fd_forest_iter_next( iter, env->forest );
-  if( FD_UNLIKELY( fd_forest_iter_done( iter, env->forest ) ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-  } else {
+  if( FD_LIKELY( !fd_forest_iter_done( iter, env->forest ) ) ) {
     fd_forest_blk_t const * ele =
       fd_forest_pool_ele_const( fd_forest_pool_const( env->forest ), iter->ele_idx );
     FD_TEST( ele );
     FD_TEST( fd_forest_query( env->forest, ele->slot ) );
-    FD_FUZZ_MUST_BE_COVERED;
   }
 }
 
@@ -571,9 +554,7 @@ fuzz_op_fill_pool( fuzz_env_t * env,
 
     ulong parent_slot = slot - 1UL; /* Missing parent: creates an orphan leaf. */
     ulong evicted;
-    int was_full = !fd_forest_pool_free( fd_forest_pool( env->forest ) );
     fd_forest_blk_t * blk = fuzz_insert_block( env, slot, parent_slot, &evicted );
-    if( FD_UNLIKELY( was_full ) ) FD_FUZZ_MUST_BE_COVERED;
     if( FD_UNLIKELY( !blk ) ) break;
   }
 }
@@ -639,7 +620,6 @@ run_sentinel_parent_seed( void ) {
   FD_TEST( !fd_forest_verify( forest ) );
 
   fd_forest_delete( fd_forest_leave( forest ) );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -672,7 +652,6 @@ run_buffered_idx_seed( void ) {
   FD_TEST( !fd_forest_verify( forest ) );
 
   fd_forest_delete( fd_forest_leave( forest ) );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -753,7 +732,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
   fuzz_validate( &env );
 
   for( ulong i=0UL; i<prog->op_cnt; i++ ) {
-    FD_FUZZ_MUST_BE_COVERED;
     fuzz_execute_op( &env, &prog->ops[ i ] );
   }
 

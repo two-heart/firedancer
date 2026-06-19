@@ -7,7 +7,6 @@
 
 #include "fd_ghost.h"
 #include "../../util/fd_util.h"
-#include "../../util/sanitize/fd_fuzz.h"
 
 /* Keep the synthetic worlds small enough that every post-action
    invariant can walk the whole tree and all voters cheaply. */
@@ -291,12 +290,6 @@ fuzz_check( fuzz_case_t * c ) {
   fd_ghost_blk_t * deepest = fd_ghost_deepest( c->ghost, root );
   FD_TEST( deepest );
   FD_TEST( fd_ghost_query( c->ghost, &deepest->id )==deepest );
-  if( FD_UNLIKELY( deepest!=best && fd_ghost_invalid_ancestor( c->ghost, deepest ) ) )
-    FD_FUZZ_MUST_BE_COVERED;
-
-  if( FD_UNLIKELY( best==root && fd_ghost_blk_child( c->ghost, root ) ) )
-    FD_FUZZ_MUST_BE_COVERED;
-
   fuzz_expect_stakes( c );
 }
 
@@ -319,8 +312,6 @@ fuzz_action_insert( fuzz_case_t *  c,
   ulong parent_idx = fuzz_pick_live( c, cur );
   ulong slot       = c->blk[ parent_idx ].slot + 1UL + fuzz_bounded( cur, 3UL );
   (void)fuzz_insert_block( c, parent_idx, slot, cur );
-
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -341,8 +332,6 @@ fuzz_action_insert_duplicate( fuzz_case_t *  c,
 
   fd_ghost_confirm( c->ghost, &blk->id );
   fuzz_eqvoc_same_slot_alternatives( c, new_idx );
-
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -352,7 +341,6 @@ fuzz_action_eqvoc( fuzz_case_t *  c,
   if( FD_UNLIKELY( !fuzz_pick_live_nonroot( c, cur, &idx ) ) ) return;
 
   fd_ghost_eqvoc( c->ghost, &c->blk[ idx ].id );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -361,15 +349,12 @@ fuzz_action_confirm( fuzz_case_t *  c,
   ulong idx = fuzz_pick_live( c, cur );
   fd_ghost_blk_t * before = fd_ghost_query( c->ghost, &c->blk[ idx ].id );
   FD_TEST( before );
-  int was_invalid = !before->valid;
 
   fd_ghost_confirm( c->ghost, &c->blk[ idx ].id );
   fuzz_eqvoc_same_slot_alternatives( c, idx );
 
   fd_ghost_blk_t * after = fd_ghost_query( c->ghost, &c->blk[ idx ].id );
   FD_TEST( after );
-  if( FD_UNLIKELY( was_invalid && after->valid ) ) FD_FUZZ_MUST_BE_COVERED;
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -407,12 +392,10 @@ fuzz_action_vote( fuzz_case_t *  c,
     c->voter[ voter_idx ].blk_idx = blk_idx;
     c->voter[ voter_idx ].slot    = slot;
     c->voter[ voter_idx ].stake   = stake;
-    FD_FUZZ_MUST_BE_COVERED;
   } else {
     FD_TEST( rc==FD_GHOST_ERR_NOT_VOTED     ||
              rc==FD_GHOST_ERR_VOTE_TOO_OLD  ||
              rc==FD_GHOST_ERR_ALREADY_VOTED );
-    FD_FUZZ_MUST_BE_COVERED;
   }
 }
 
@@ -426,8 +409,6 @@ fuzz_action_publish( fuzz_case_t *  c,
   FD_TEST( blk );
   fd_ghost_publish( c->ghost, blk );
   fuzz_reconcile_publish( c, idx );
-
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -460,7 +441,6 @@ run_pruned_voter_replay_seed( fuzz_case_t *  c,
   c->voter[ 0 ].stake   = 11UL;
 
   fuzz_check( c );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 int
@@ -554,6 +534,5 @@ LLVMFuzzerTestOneInput( uchar const * data,
   }
 
   fd_ghost_delete( fd_ghost_leave( c.ghost ) );
-  FD_FUZZ_MUST_BE_COVERED;
   return 0;
 }

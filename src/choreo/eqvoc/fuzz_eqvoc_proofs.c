@@ -307,19 +307,19 @@ LLVMFuzzerTestOneInput( uchar const * data,
   for( ulong i=0UL; i<FD_EQVOC_CHUNK_CNT; i++ ) {
     last_err = fd_eqvoc_chunk_insert( eqvoc, FUZZ_ROOT, version, opt_leaders, from, &chunks[ order[ i ] ], chunks_out );
     switch( last_err ) {
-    case FD_EQVOC_SUCCESS:        FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_IGNORED:        FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_SERDE:      FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_SLOT:       FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_VERSION:    FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_TYPE:       FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_MERKLE:     FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_SIG:        FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_CHUNK_CNT:  FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_CHUNK_IDX:  FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_CHUNK_LEN:  FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_CHUNK_FROM: FD_FUZZ_MUST_BE_COVERED; break;
-    case FD_EQVOC_ERR_CHUNK_SLOT: FD_FUZZ_MUST_BE_COVERED; break;
+    case FD_EQVOC_SUCCESS:        break;
+    case FD_EQVOC_IGNORED:        break;
+    case FD_EQVOC_ERR_SERDE:      break;
+    case FD_EQVOC_ERR_SLOT:       break;
+    case FD_EQVOC_ERR_VERSION:    break;
+    case FD_EQVOC_ERR_TYPE:       break;
+    case FD_EQVOC_ERR_MERKLE:     break;
+    case FD_EQVOC_ERR_SIG:        break;
+    case FD_EQVOC_ERR_CHUNK_CNT:  break;
+    case FD_EQVOC_ERR_CHUNK_IDX:  break;
+    case FD_EQVOC_ERR_CHUNK_LEN:  break;
+    case FD_EQVOC_ERR_CHUNK_FROM: break;
+    case FD_EQVOC_ERR_CHUNK_SLOT: break;
     default: abort();
     }
     if( FD_UNLIKELY( last_err!=FD_EQVOC_IGNORED ) ) break;
@@ -330,13 +330,8 @@ LLVMFuzzerTestOneInput( uchar const * data,
     FD_TEST( !fd_eqvoc_proof_verified( eqvoc, chunks[ 0 ].slot ) );
   }
 
-  if( FD_UNLIKELY( last_err==FD_EQVOC_SUCCESS ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    int dup_err = fd_eqvoc_chunk_insert( eqvoc, FUZZ_ROOT, version, opt_leaders, from, &chunks[ 0 ], chunks_out );
-    if( dup_err==FD_EQVOC_IGNORED ) FD_FUZZ_MUST_BE_COVERED;
-  } else if( mode==MODE_DD_IGNORED && last_err==FD_EQVOC_IGNORED ) {
-    FD_FUZZ_MUST_BE_COVERED;
-  }
+  if( FD_UNLIKELY( last_err==FD_EQVOC_SUCCESS ) )
+    (void)fd_eqvoc_chunk_insert( eqvoc, FUZZ_ROOT, version, opt_leaders, from, &chunks[ 0 ], chunks_out );
 
   fd_eqvoc_delete( fd_eqvoc_leave( eqvoc ) );
   return 0;

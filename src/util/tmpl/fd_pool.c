@@ -230,6 +230,101 @@ POOL_(private_meta_const)( POOL_T const * join ) {
   return (POOL_(private_t) const *)(((ulong)join) - POOL_(private_meta_footprint)());
 }
 
+/* Free elements store pool metadata in POOL_NEXT.  The rest of the
+   element remains caller-owned storage: fd_pool only promises that
+   POOL_NEXT is clobbered while the element is free.  In particular,
+   many composed data structures keep their own free-state metadata in
+   other fields. */
+
+static inline void
+POOL_(private_free_sanitize)( POOL_T * ele ) {
+  (void)ele;
+# if FD_HAS_DEEPASAN
+  fd_asan_unpoison( &ele->POOL_NEXT, sizeof(ele->POOL_NEXT) );
+# endif
+# if FD_HAS_MSAN
+  fd_msan_unpoison( &ele->POOL_NEXT, sizeof(ele->POOL_NEXT) );
+# endif
+}
+
+static inline void
+POOL_(private_next_unpoison)( POOL_T * ele ) {
+  (void)ele;
+# if FD_HAS_DEEPASAN
+  fd_asan_unpoison( &ele->POOL_NEXT, sizeof(ele->POOL_NEXT) );
+# endif
+# if FD_HAS_MSAN
+  fd_msan_unpoison( &ele->POOL_NEXT, sizeof(ele->POOL_NEXT) );
+# endif
+}
+
+static inline void
+POOL_(private_ele_acquire)( POOL_T * ele ) {
+  (void)ele;
+# if FD_HAS_DEEPASAN
+  fd_asan_unpoison( &ele->POOL_NEXT, sizeof(ele->POOL_NEXT) );
+# endif
+# if FD_HAS_MSAN
+  fd_msan_poison( &ele->POOL_NEXT, sizeof(ele->POOL_NEXT) );
+# endif
+}
+
+static inline void
+POOL_(private_ele_unpoison)( POOL_T * ele ) {
+  (void)ele;
+# if FD_HAS_DEEPASAN
+  fd_asan_unpoison( ele, sizeof(POOL_T) );
+# endif
+# if FD_HAS_MSAN
+  fd_msan_unpoison( ele, sizeof(POOL_T) );
+# endif
+}
+
+static inline void
+POOL_(private_range_unpoison)( POOL_T * join,
+                               ulong    max ) {
+# if FD_HAS_DEEPASAN || FD_HAS_MSAN
+  for( ulong idx=0UL; idx<max; idx++ ) POOL_(private_ele_unpoison)( join+idx );
+# else
+  (void)join; (void)max;
+# endif
+}
+
+static inline void
+POOL_(private_shpool_asan_unpoison)( void * shpool,
+                                     ulong  max ) {
+# if FD_HAS_DEEPASAN
+  ulong meta_footprint = POOL_(private_meta_footprint)();
+  ulong data_footprint = fd_ulong_align_up( sizeof(POOL_T)*max, fd_ulong_max( alignof(POOL_T), 128UL ) );
+  fd_asan_unpoison( shpool, meta_footprint + data_footprint );
+# else
+  (void)shpool; (void)max;
+# endif
+}
+
+static inline void
+POOL_(private_reset_sanitize)( POOL_T * join ) {
+# if FD_HAS_DEEPASAN || FD_HAS_MSAN
+  POOL_(private_t) * meta = POOL_(private_meta)( join );
+
+# if FD_HAS_DEEPASAN
+  for( ulong idx=0UL; idx<meta->max; idx++ ) POOL_(private_ele_unpoison)( join+idx );
+# endif
+
+  ulong idx = meta->free_top;
+  while( idx!=POOL_IDX_NULL ) {
+    POOL_(private_next_unpoison)( join+idx );
+    idx = (ulong)join[ idx ].POOL_NEXT;
+  }
+
+# if POOL_SENTINEL
+  if( FD_LIKELY( meta->max ) ) POOL_(private_ele_unpoison)( join );
+# endif
+# else
+  (void)join;
+# endif
+}
+
 /* Public APIS ********************************************************/
 
 FD_FN_CONST static inline ulong
@@ -293,6 +388,8 @@ POOL_(new)( void * shmem,
   POOL_T *           join = (POOL_T *)(((ulong)shmem) + POOL_(private_meta_footprint)());
   POOL_(private_t) * meta = POOL_(private_meta)( join );
 
+  POOL_(private_shpool_asan_unpoison)( shmem, max );
+
   meta->max  = max;
   meta->free = max;
 
@@ -322,6 +419,8 @@ POOL_(new)( void * shmem,
   }
 # endif
 
+  POOL_(private_reset_sanitize)( join );
+
   FD_COMPILER_MFENCE();
   FD_VOLATILE( meta->magic ) = (POOL_MAGIC);
   FD_COMPILER_MFENCE();
@@ -332,6 +431,8 @@ POOL_(new)( void * shmem,
 POOL_IMPL_STATIC void
 POOL_(reset)( POOL_T * join ) {
   POOL_(private_t) * meta = POOL_(private_meta)( join );
+
+  POOL_(private_shpool_asan_unpoison)( (void *)(((ulong)join) - POOL_(private_meta_footprint)()), meta->max );
 
   meta->free = meta->max;
 
@@ -360,6 +461,8 @@ POOL_(reset)( POOL_T * join ) {
 #   endif
   }
 # endif
+
+  POOL_(private_reset_sanitize)( join );
 }
 
 POOL_IMPL_STATIC POOL_T *
@@ -399,9 +502,14 @@ POOL_(delete)( void * shpool ) {
 
   if( FD_UNLIKELY( FD_VOLATILE_CONST( meta->magic )!=(POOL_MAGIC) ) ) return NULL;
 
+  ulong max = meta->max;
+
   FD_COMPILER_MFENCE();
   FD_VOLATILE( meta->magic ) = 0UL;
   FD_COMPILER_MFENCE();
+
+  POOL_(private_shpool_asan_unpoison)( shpool, max );
+  POOL_(private_range_unpoison)( join, max );
 
   return shpool;
 }
@@ -495,6 +603,7 @@ POOL_(idx_acquire)( POOL_T * join ) {
   meta->free_top = (ulong)join[ idx ].POOL_NEXT;
 # endif
   meta->free--;
+  POOL_(private_ele_acquire)( join+idx );
   return idx;
 }
 
@@ -514,6 +623,7 @@ POOL_(idx_release)( POOL_T * join,
   join[ idx ].POOL_NEXT = (POOL_IDX_T)meta->free_top;
   meta->free_top = idx;
   meta->free++;
+  POOL_(private_free_sanitize)( join+idx );
 }
 
 static inline POOL_T * POOL_(ele_acquire)( POOL_T * join               ) { return join + POOL_(idx_acquire)( join ); }

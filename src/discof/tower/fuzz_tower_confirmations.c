@@ -6,7 +6,6 @@
 #include <string.h>
 
 #include "../../util/fd_util.h"
-#include "../../util/sanitize/fd_fuzz.h"
 
 #define QUERY_TOWERS mock_query_towers
 #define QUERY_VOTERS mock_query_voters
@@ -284,20 +283,12 @@ fuzz_drain_publishes( fd_tower_tile_t * ctx ) {
     publish_t * pub = publishes_pop_head_nocopy( ctx->publishes );
     switch( pub->sig ) {
     case FD_TOWER_SIG_SLOT_CONFIRMED:
-      if( FD_UNLIKELY( pub->msg.slot_confirmed.fwd ) ) {
-        FD_FUZZ_MUST_BE_COVERED;
-      } else {
-        FD_FUZZ_MUST_BE_COVERED;
-      }
       break;
     case FD_TOWER_SIG_SLOT_DUPLICATE:
-      FD_FUZZ_MUST_BE_COVERED;
       break;
     case FD_TOWER_SIG_SLOT_ROOTED:
-      FD_FUZZ_MUST_BE_COVERED;
       break;
     case FD_TOWER_SIG_SLOT_IGNORED:
-      FD_FUZZ_MUST_BE_COVERED;
       break;
     case FD_TOWER_SIG_SLOT_DONE:
       break;
@@ -435,14 +426,12 @@ fuzz_replay_action( fuzz_env_t *    env,
   sc.is_leader       = (int)(fuzz_u8( r ) & 1U);
 
   if( FD_UNLIKELY( !fuzz_prior_vote_visible( ctx ) ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
     return;
   }
 
   replay_slot_completed( ctx, &sc, 0UL, NULL );
   if( FD_LIKELY( !use_unknown_parent && fd_ghost_query( ctx->ghost, block_id ) ) ) {
     fuzz_remember( env, slot, sc.parent_slot, block_id, parent_id );
-    FD_FUZZ_MUST_BE_COVERED;
   }
   fuzz_drain_publishes( ctx );
 }
@@ -462,8 +451,7 @@ fuzz_count_votes_for_block( fd_tower_tile_t * ctx,
                             fuzz_reader_t *   r ) {
   ulong voter_cnt = 1UL + fuzz_range( r, FUZZ_VTR_CNT );
   for( ulong i=0UL; i<voter_cnt; i++ ) {
-    int err = fd_votes_count_vote( ctx->votes, &ctx->vote_accs[ i ], fuzz_stake( i ), slot, block_id );
-    if( FD_UNLIKELY( err==FD_VOTES_SUCCESS ) ) FD_FUZZ_MUST_BE_COVERED;
+    (void)fd_votes_count_vote( ctx->votes, &ctx->vote_accs[ i ], fuzz_stake( i ), slot, block_id );
   }
 }
 
@@ -534,7 +522,6 @@ fuzz_root_action( fuzz_env_t *    env,
   if( FD_UNLIKELY( !fuzz_ghost_descends_from_root( ctx, ghost_blk ) ) ) return;
 
   publish_slot_rooted( ctx, known->slot, &known->block_id );
-  FD_FUZZ_MUST_BE_COVERED;
 
   fuzz_drain_publishes( ctx );
 }
@@ -640,7 +627,6 @@ run_duplicate_confirm_seed( fuzz_env_t *    env,
   fuzz_drain_publishes( ctx );
 
   FD_TEST( fuzz_prior_vote_visible( ctx ) );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 int

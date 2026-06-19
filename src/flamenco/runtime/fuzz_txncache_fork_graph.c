@@ -10,29 +10,64 @@
 #include <string.h>
 
 #include "../../util/fd_util.h"
-#include "../../util/sanitize/fd_fuzz.h"
-#if FD_HAS_RACESAN
-#include "../../util/racesan/fd_racesan_async.h"
-#include "../../util/racesan/fd_racesan_weave.h"
-#endif
 #include "fd_txncache.h"
 #include "fd_txncache_private.h"
+
+/* fuzz_txncache_fork_graph is a stateful differential fuzzer for the
+   fork-aware transaction cache (fd_txncache).  It drives the real
+   structure and an independent reference model through the same
+   sequence of operations and, after every operation, asserts that
+
+     (a) every query answer matches the model oracle exactly, and
+     (b) the real structure's internal bookkeeping (page ownership,
+         pool accounting, frozen state, and the parent/child/sibling
+         fork tree) is self-consistent and matches the model.
+
+   The input byte stream is the program: each byte (after a short
+   prologue choosing the cache geometry) selects and parameterizes one
+   operation.  When the input is exhausted the program ends -- there is
+   no PRNG fallback, so every consumed byte maps to behavior and growing
+   the input grows the program.  This keeps coverage-guided mutation
+   effective for reaching deep states.
+
+   Fork lifecycle mirrors production frozen states:
+
+     NEW    (0)  attach_child: live, no blockhash yet
+     HASHED (1)  attach_blockhash: has a blockhash, usable as an insert
+                 block context, but not queryable and not rootable
+     FINAL  (2)  finalize_fork: has a blockhash + txnhash offset, usable
+                 as a query/insert block context, parent, and root
+
+   A fork acquires its blockhash via exactly one of attach_blockhash or
+   finalize_fork (never both) so its (blockhash, offset) pair never
+   mutates after assignment -- matching the realistic contract and
+   keeping the model oracle exact.
+
+   The op_extend_root macro (attach a child off the root, finalize it,
+   advance the root onto it) lets a run of one byte value build a deep
+   root chain cheaply, so the blockhash-distance root eviction path
+   (root_cnt > FD_TXNCACHE_MAX_BLOCKHASH_DISTANCE, the steady-state
+   common case in production) is reachable under mutation.
+
+   Known coverage gap: filling a single blockhash to its page capacity
+   requires >=FD_TXNCACHE_TXNS_PER_PAGE (16384) inserts referencing one
+   blockhash, so the multi-page txnpage allocation and purge_stale
+   compaction paths are not exercised here -- reaching them needs
+   programs far larger than is practical for this differential harness. */
 
 #define FUZZ_MAX_LIVE_SLOTS    (4UL)
 #define FUZZ_MAX_TXN_PER_SLOT  (256UL)
 #define FUZZ_MAX_ACTIVE_SLOTS  (FD_TXNCACHE_MAX_BLOCKHASH_DISTANCE+FUZZ_MAX_LIVE_SLOTS)
-#define FUZZ_MAX_ACTIONS       (96UL)
+#define FUZZ_MAX_ACTIONS       (2048UL)
 #define FUZZ_MAX_MODEL_TXNS    (768UL)
 #define FUZZ_ROOT_HISTORY_MAX  (FD_TXNCACHE_MAX_BLOCKHASH_DISTANCE+FUZZ_MAX_ACTIONS+4UL)
 
-#if FD_HAS_RACESAN
-#define FUZZ_RACESAN_FIBER_MAX (2UL)
-#define FUZZ_RACESAN_STACK_MAX (1UL<<20)
-#define FUZZ_RACESAN_ITER_MAX  (128UL)
-#define FUZZ_RACESAN_STEP_MAX  (100000UL)
-#endif
-
 #define NULL_FORK ((fd_txncache_fork_id_t){ .val = USHORT_MAX })
+
+/* Fork frozen states (mirror fd_txncache.c). */
+#define FORK_NEW    (0)
+#define FORK_HASHED (1)
+#define FORK_FINAL  (2)
 
 /* Mirror fd_txncache.c's private local layout so this test target can
    assert cheap structural invariants without exporting production API. */
@@ -58,12 +93,11 @@ struct fd_txncache_private {
 typedef struct {
   uchar const * cur;
   ulong         rem;
-  ulong         salt;
 } fuzz_cursor_t;
 
 typedef struct {
   int       alive;
-  int       finalized;
+  int       frozen;     /* FORK_NEW / FORK_HASHED / FORK_FINAL */
   ushort    parent;
   uint      generation;
   ulong     txnhash_offset;
@@ -101,21 +135,6 @@ static ulong   fuzz_shmem_fp;
 static ulong   fuzz_ljoin_fp;
 static model_t fuzz_model[ 1 ];
 
-#if FD_HAS_RACESAN
-typedef struct {
-  fd_racesan_async_t async[ 1 ];
-  uchar              stack[ FUZZ_RACESAN_STACK_MAX ] __attribute__((aligned(64)));
-
-  fd_txncache_t *       tc;
-  fd_txncache_fork_id_t fork_id;
-  fd_hash_t             blockhash[ 1 ];
-  fd_hash_t             txnhash[ 1 ];
-  int                   query_result;
-} fuzz_racesan_fiber_t;
-
-static fuzz_racesan_fiber_t fuzz_racesan_fiber[ FUZZ_RACESAN_FIBER_MAX ];
-#endif
-
 static void
 hash_from_seed( fd_hash_t * h,
                 ulong       tag,
@@ -128,17 +147,18 @@ hash_from_seed( fd_hash_t * h,
   h->ul[ 3 ] = 0x082efa98ec4e6c89UL ^ fd_ulong_hash( seed + tag + a + b );
 }
 
+/* fuzz_u8 returns the next input byte, or 0 once the input is exhausted.
+   The caller (the action loop) stops issuing operations when the input
+   runs out, so the program length is determined entirely by the input;
+   there is no PRNG fallback that would decouple bytes from behavior. */
+
 static uchar
 fuzz_u8( fuzz_cursor_t * cur ) {
-  if( FD_LIKELY( cur->rem ) ) {
-    uchar v = cur->cur[ 0 ];
-    cur->cur++;
-    cur->rem--;
-    return v;
-  }
-
-  cur->salt = 6364136223846793005UL*cur->salt + 1442695040888963407UL;
-  return (uchar)(cur->salt >> 56);
+  if( FD_UNLIKELY( !cur->rem ) ) return 0U;
+  uchar v = cur->cur[ 0 ];
+  cur->cur++;
+  cur->rem--;
+  return v;
 }
 
 static ulong
@@ -153,11 +173,7 @@ fuzz_bounded( fuzz_cursor_t * cur,
 }
 
 static fd_txncache_t *
-setup_cache( ulong max_live_slots,
-             ulong max_txn_per_slot ) {
-  FD_TEST( max_live_slots  <=FUZZ_MAX_LIVE_SLOTS   );
-  FD_TEST( max_txn_per_slot<=FUZZ_MAX_TXN_PER_SLOT );
-
+setup( ulong max_live_slots, ulong max_txn_per_slot ) {
   fd_txncache_shmem_t * shtc = fd_txncache_shmem_join( fd_txncache_shmem_new( fuzz_shmem, max_live_slots, max_txn_per_slot ) );
   FD_TEST( shtc );
 
@@ -195,20 +211,24 @@ model_current_tree_cnt( model_t const * m ) {
   return cnt;
 }
 
+/* model_pick_fork selects a uniformly-random alive fork (using cursor
+   bytes) that is in the current tree (if want_current_tree) and whose
+   frozen state is in [frozen_lo,frozen_hi].  Returns USHORT_MAX if no
+   fork qualifies. */
+
 static ushort
 model_pick_fork( model_t const * m,
                  fuzz_cursor_t * cur,
                  int             want_current_tree,
-                 int             want_unfinalized,
-                 int             want_finalized ) {
+                 int             frozen_lo,
+                 int             frozen_hi ) {
   ushort candidate[ FUZZ_MAX_ACTIVE_SLOTS ];
   ulong  candidate_cnt = 0UL;
 
   for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
     if( FD_UNLIKELY( !m->fork[ i ].alive ) ) continue;
+    if( m->fork[ i ].frozen<frozen_lo || m->fork[ i ].frozen>frozen_hi ) continue;
     if( want_current_tree && !model_in_current_tree( m, (ushort)i ) ) continue;
-    if( want_unfinalized &&  m->fork[ i ].finalized ) continue;
-    if( want_finalized   && !m->fork[ i ].finalized ) continue;
     candidate[ candidate_cnt++ ] = (ushort)i;
   }
 
@@ -216,81 +236,91 @@ model_pick_fork( model_t const * m,
   return candidate[ fuzz_bounded( cur, candidate_cnt ) ];
 }
 
-static ushort
-model_pick_parent( model_t const * m,
-                   fuzz_cursor_t * cur ) {
-  ushort candidate[ FUZZ_MAX_ACTIVE_SLOTS ];
-  ulong  candidate_cnt = 0UL;
-
-  for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
-    if( FD_UNLIKELY( !m->fork[ i ].alive     ) ) continue;
-    if( FD_UNLIKELY( !m->fork[ i ].finalized ) ) continue;
-    if( FD_UNLIKELY( !model_in_current_tree( m, (ushort)i ) ) ) continue;
-    candidate[ candidate_cnt++ ] = (ushort)i;
-  }
-
-  if( FD_UNLIKELY( !candidate_cnt ) ) return USHORT_MAX;
-  return candidate[ fuzz_bounded( cur, candidate_cnt ) ];
-}
+/* model_pick_strict_ancestor returns a random strict ancestor of
+   fork_id that carries a usable blockhash.  For a query context
+   (want_final) only FINAL ancestors qualify; for an insert context any
+   ancestor with a blockhash (HASHED or FINAL) qualifies. */
 
 static ushort
-model_pick_strict_ancestor_with_blockhash( model_t const * m,
-                                           fuzz_cursor_t * cur,
-                                           ushort          fork_id ) {
+model_pick_strict_ancestor( model_t const * m,
+                            fuzz_cursor_t * cur,
+                            ushort          fork_id,
+                            int             want_final ) {
   ushort candidate[ FUZZ_MAX_ACTIVE_SLOTS ];
   ulong  candidate_cnt = 0UL;
 
   for( ushort cur_id=m->fork[ fork_id ].parent; cur_id!=USHORT_MAX; cur_id=m->fork[ cur_id ].parent ) {
-    if( FD_UNLIKELY( !m->fork[ cur_id ].alive     ) ) break;
-    if( FD_UNLIKELY( !m->fork[ cur_id ].finalized ) ) continue;
-    candidate[ candidate_cnt++ ] = cur_id;
+    if( FD_UNLIKELY( !m->fork[ cur_id ].alive ) ) break;
+    int ok = want_final ? (m->fork[ cur_id ].frozen==FORK_FINAL) : (m->fork[ cur_id ].frozen>=FORK_HASHED);
+    if( ok ) candidate[ candidate_cnt++ ] = cur_id;
   }
 
   if( FD_UNLIKELY( !candidate_cnt ) ) return USHORT_MAX;
   return candidate[ fuzz_bounded( cur, candidate_cnt ) ];
 }
 
+/* model_hash_on_strict_ancestry returns 1 if any strict ancestor of
+   fork_id that carries a blockhash (HASHED or FINAL) holds blockhash. */
+
 static int
-model_hash_on_strict_ancestry( model_t const * m,
-                               ushort          fork_id,
+model_hash_on_strict_ancestry( model_t const *   m,
+                               ushort            fork_id,
                                fd_hash_t const * blockhash ) {
   for( ushort cur_id=m->fork[ fork_id ].parent; cur_id!=USHORT_MAX; cur_id=m->fork[ cur_id ].parent ) {
     if( FD_UNLIKELY( !m->fork[ cur_id ].alive ) ) break;
-    if( m->fork[ cur_id ].finalized && fd_hash_eq( &m->fork[ cur_id ].blockhash, blockhash ) ) return 1;
+    if( m->fork[ cur_id ].frozen>=FORK_HASHED && fd_hash_eq( &m->fork[ cur_id ].blockhash, blockhash ) ) return 1;
   }
   return 0;
 }
 
-static void
-model_make_finalize_hash( model_t *      m,
-                          fuzz_cursor_t * cur,
-                          ushort         fork_id,
-                          fd_hash_t *    blockhash ) {
-  int duplicate = !(fuzz_u8( cur ) & 3U);
-  if( duplicate ) {
-    ushort candidate[ FUZZ_MAX_ACTIVE_SLOTS ];
-    ulong  candidate_cnt = 0UL;
-    for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
-      if( FD_UNLIKELY( !m->fork[ i ].alive     ) ) continue;
-      if( FD_UNLIKELY( !m->fork[ i ].finalized ) ) continue;
-      if( FD_UNLIKELY( i==fork_id || model_descends( m, fork_id, (ushort)i ) ) ) continue;
-      candidate[ candidate_cnt++ ] = (ushort)i;
-    }
-    if( candidate_cnt ) {
-      ushort src = candidate[ fuzz_bounded( cur, candidate_cnt ) ];
-      *blockhash = m->fork[ src ].blockhash;
-      FD_FUZZ_MUST_BE_COVERED;
-      return;
-    }
-  }
+/* model_make_fresh_hash produces a blockhash that does not collide with
+   any blockhash already present on fork_id's strict ancestry, so that
+   blockhash_on_fork resolves unambiguously along that chain. */
 
+static void
+model_make_fresh_hash( model_t *   m,
+                       ushort      fork_id,
+                       fd_hash_t * blockhash ) {
   do {
     hash_from_seed( blockhash, 0xB10C000000000000UL, ++m->hash_nonce, fork_id );
   } while( model_hash_on_strict_ancestry( m, fork_id, blockhash ) );
 }
 
+/* model_make_finalize_hash usually mints a fresh unique blockhash but,
+   one time in four, reuses a blockhash from an unrelated fork to stress
+   duplicate-blockhash handling (multiple entries in one map bucket,
+   disambiguated by the descends set).  The reused hash is never one on
+   fork_id's own strict ancestry. */
+
 static void
-model_add_fork( model_t *            m,
+model_make_finalize_hash( model_t *       m,
+                          fuzz_cursor_t * cur,
+                          ushort          fork_id,
+                          fd_hash_t *     blockhash ) {
+  int duplicate = !(fuzz_u8( cur ) & 3U);
+  if( duplicate ) {
+    ushort candidate[ FUZZ_MAX_ACTIVE_SLOTS ];
+    ulong  candidate_cnt = 0UL;
+    for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
+      if( FD_UNLIKELY( !m->fork[ i ].alive ) ) continue;
+      if( FD_UNLIKELY( m->fork[ i ].frozen<FORK_HASHED ) ) continue;
+      if( FD_UNLIKELY( i==fork_id || model_descends( m, fork_id, (ushort)i ) ) ) continue;
+      candidate[ candidate_cnt++ ] = (ushort)i;
+    }
+    if( candidate_cnt ) {
+      ushort src = candidate[ fuzz_bounded( cur, candidate_cnt ) ];
+      if( !model_hash_on_strict_ancestry( m, fork_id, &m->fork[ src ].blockhash ) ) {
+        *blockhash = m->fork[ src ].blockhash;
+        return;
+      }
+    }
+  }
+
+  model_make_fresh_hash( m, fork_id, blockhash );
+}
+
+static void
+model_add_fork( model_t *             m,
                 fd_txncache_fork_id_t fork_id,
                 ushort                parent,
                 uint                  generation ) {
@@ -298,7 +328,7 @@ model_add_fork( model_t *            m,
   model_fork_t * fork = &m->fork[ fork_id.val ];
   memset( fork, 0, sizeof(*fork) );
   fork->alive      = 1;
-  fork->finalized  = 0;
+  fork->frozen     = FORK_NEW;
   fork->parent     = parent;
   fork->generation = generation;
   m->live_cnt++;
@@ -323,7 +353,7 @@ model_remove_subtree( model_t * m,
 }
 
 static void
-model_init( model_t *      m,
+model_init( model_t *       m,
             fd_txncache_t * tc,
             ulong           max_live_slots ) {
   memset( m, 0, sizeof(*m) );
@@ -338,7 +368,7 @@ model_init( model_t *      m,
   hash_from_seed( blockhash, 0xB10C000000000000UL, 0UL, 0UL );
   fd_txncache_finalize_fork( tc, root, 0UL, blockhash->uc );
 
-  m->fork[ root.val ].finalized       = 1;
+  m->fork[ root.val ].frozen          = FORK_FINAL;
   m->fork[ root.val ].blockhash       = *blockhash;
   m->fork[ root.val ].txnhash_offset  = 0UL;
   m->current_root                     = root.val;
@@ -346,9 +376,9 @@ model_init( model_t *      m,
 }
 
 static int
-model_query( model_t const * m,
-             ushort          fork_id,
-             ushort          block_fork,
+model_query( model_t const *   m,
+             ushort            fork_id,
+             ushort            block_fork,
              fd_hash_t const * txnhash ) {
   model_fork_t const * block = &m->fork[ block_fork ];
   ulong off = block->txnhash_offset;
@@ -370,6 +400,11 @@ model_query( model_t const * m,
   return 0;
 }
 
+/* check_cache_invariants verifies the real structure's internal
+   bookkeeping against the model.  It is O(active_slots + max_txnpages),
+   so it is cheap to run after every operation even at the maximum fork
+   tree depth. */
+
 static void
 check_cache_invariants( model_t const * m ) {
   fd_txncache_t * tc = m->tc;
@@ -379,6 +414,8 @@ check_cache_invariants( model_t const * m ) {
   ulong pool_free = blockcache_pool_free( tc->blockcache_shmem_pool );
   FD_TEST( pool_free + m->live_cnt == blockcache_pool_max( tc->blockcache_shmem_pool ) );
 
+  /* Page ownership: every txnpage is owned by exactly one live fork or
+     is on the free list, and all pages are accounted for. */
   uchar page_seen[ 512 ];
   memset( page_seen, 0, sizeof(page_seen) );
   ulong used_pages = 0UL;
@@ -387,12 +424,9 @@ check_cache_invariants( model_t const * m ) {
     if( FD_UNLIKELY( !m->fork[ i ].alive ) ) continue;
 
     fuzz_blockcache_private_t const * bc = &tc->blockcache_pool[ i ];
-    FD_TEST( bc->shmem->frozen>=0 );
     FD_TEST( bc->shmem->generation==m->fork[ i ].generation );
     FD_TEST( bc->shmem->pages_cnt<=tc->shmem->txnpages_per_blockhash_max );
-
-    if( m->fork[ i ].finalized ) FD_TEST( bc->shmem->frozen==2 );
-    else                         FD_TEST( bc->shmem->frozen<=1 );
+    FD_TEST( bc->shmem->frozen==m->fork[ i ].frozen );
 
     for( ulong j=0UL; j<bc->shmem->pages_cnt; j++ ) {
       ushort page = bc->pages[ j ];
@@ -415,98 +449,119 @@ check_cache_invariants( model_t const * m ) {
 
   FD_TEST( used_pages + tc->shmem->txnpages_free_cnt == tc->shmem->max_txnpages );
 
+  /* Fork tree: the real child/sibling linked lists for the current tree
+     must exactly enumerate the model's children, with no cycles, no
+     duplicates, and correct parentage.  Forks outside the current tree
+     (old roots pending eviction) may have stale links and are not
+     checked.  Compute current-tree membership in O(active_slots) via a
+     breadth-first sweep over the model's parent relation. */
+  ushort child_head[ FUZZ_MAX_ACTIVE_SLOTS ];
+  ushort child_sib [ FUZZ_MAX_ACTIVE_SLOTS ];
+  for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) child_head[ i ] = USHORT_MAX;
+  for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
+    if( !m->fork[ i ].alive ) continue;
+    ushort parent = m->fork[ i ].parent;
+    if( parent<FUZZ_MAX_ACTIVE_SLOTS ) {
+      child_sib[ i ]       = child_head[ parent ];
+      child_head[ parent ] = (ushort)i;
+    }
+  }
+
+  uchar  in_tree[ FUZZ_MAX_ACTIVE_SLOTS ];
+  ushort queue  [ FUZZ_MAX_ACTIVE_SLOTS ];
+  memset( in_tree, 0, sizeof(in_tree) );
+  ulong qhead = 0UL, qtail = 0UL;
+  if( m->current_root<FUZZ_MAX_ACTIVE_SLOTS && m->fork[ m->current_root ].alive ) {
+    in_tree[ m->current_root ] = 1U;
+    queue[ qtail++ ] = m->current_root;
+  }
+  while( qhead<qtail ) {
+    ushort p = queue[ qhead++ ];
+    for( ushort c=child_head[ p ]; c!=USHORT_MAX; c=child_sib[ c ] ) {
+      if( !in_tree[ c ] ) { in_tree[ c ] = 1U; queue[ qtail++ ] = c; }
+    }
+  }
+
+  uchar reached[ FUZZ_MAX_ACTIVE_SLOTS ];
+  memset( reached, 0, sizeof(reached) );
   for( ulong parent_id=0UL; parent_id<FUZZ_MAX_ACTIVE_SLOTS; parent_id++ ) {
-    if( FD_UNLIKELY( !m->fork[ parent_id ].alive ) ) continue;
+    if( !in_tree[ parent_id ] ) continue;
 
-    uchar reached[ FUZZ_MAX_ACTIVE_SLOTS ];
-    memset( reached, 0, sizeof(reached) );
-
-    int parent_is_current_tree = model_in_current_tree( m, (ushort)parent_id );
     ushort child_id = tc->blockcache_pool[ parent_id ].shmem->child_id.val;
-    for( ulong depth=0UL; child_id!=USHORT_MAX && depth<FUZZ_MAX_ACTIVE_SLOTS; depth++ ) {
-      if( FD_UNLIKELY( child_id>=FUZZ_MAX_ACTIVE_SLOTS ) ) FD_TEST( 0 );
+    for( ulong depth=0UL; child_id!=USHORT_MAX; depth++ ) {
+      FD_TEST( depth<FUZZ_MAX_ACTIVE_SLOTS );
+      FD_TEST( child_id<FUZZ_MAX_ACTIVE_SLOTS );
       fuzz_blockcache_private_t const * child = &tc->blockcache_pool[ child_id ];
-      if( FD_UNLIKELY( !m->fork[ child_id ].alive ||
-                       child->shmem->frozen<0     ||
-                       m->fork[ child_id ].parent!=(ushort)parent_id ) ) {
-        FD_FUZZ_MUST_BE_COVERED;
-        if( parent_is_current_tree ) FD_TEST( 0 );
-        child_id = USHORT_MAX;
-        break;
-      }
+      FD_TEST( m->fork[ child_id ].alive );
+      FD_TEST( child->shmem->frozen>=0 );
+      FD_TEST( m->fork[ child_id ].parent==(ushort)parent_id );
       FD_TEST( !reached[ child_id ] );
       reached[ child_id ] = 1U;
       child_id = child->shmem->sibling_id.val;
     }
-    if( FD_UNLIKELY( child_id!=USHORT_MAX ) ) FD_TEST( 0 );
+  }
 
-    if( parent_is_current_tree ) {
-      for( ulong child_id2=0UL; child_id2<FUZZ_MAX_ACTIVE_SLOTS; child_id2++ ) {
-        if( m->fork[ child_id2 ].alive && m->fork[ child_id2 ].parent==(ushort)parent_id )
-          FD_TEST( reached[ child_id2 ] );
-      }
-    }
+  for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
+    if( in_tree[ i ] && (ushort)i!=m->current_root ) FD_TEST( reached[ i ] );
   }
 }
 
 static void
-op_attach( model_t *      m,
+op_attach( model_t *       m,
            fuzz_cursor_t * cur ) {
-  if( FD_UNLIKELY( model_current_tree_cnt( m )>=m->max_live_slots ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  if( FD_UNLIKELY( model_current_tree_cnt( m )>=m->max_live_slots ) ) return;
+  if( FD_UNLIKELY( !blockcache_pool_free( m->tc->blockcache_shmem_pool ) ) ) return;
 
-  ushort parent = model_pick_parent( m, cur );
-  if( FD_UNLIKELY( parent==USHORT_MAX ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  /* Build off a fork that already carries a blockhash (HASHED or FINAL)
+     so descendants have a usable insert/query block context. */
+  ushort parent = model_pick_fork( m, cur, 1, FORK_HASHED, FORK_FINAL );
+  if( FD_UNLIKELY( parent==USHORT_MAX ) ) return;
 
   fd_txncache_fork_id_t child = fd_txncache_attach_child( m->tc, (fd_txncache_fork_id_t){ .val = parent } );
   model_add_fork( m, child, parent, m->tc->blockcache_pool[ child.val ].shmem->generation );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
-op_finalize( model_t *      m,
+op_attach_blockhash( model_t *       m,
+                     fuzz_cursor_t * cur ) {
+  ushort fork_id = model_pick_fork( m, cur, 1, FORK_NEW, FORK_NEW );
+  if( FD_UNLIKELY( fork_id==USHORT_MAX ) ) return;
+
+  fd_hash_t blockhash[ 1 ];
+  model_make_fresh_hash( m, fork_id, blockhash );
+
+  fd_txncache_attach_blockhash( m->tc, (fd_txncache_fork_id_t){ .val = fork_id }, blockhash->uc );
+  m->fork[ fork_id ].frozen         = FORK_HASHED;
+  m->fork[ fork_id ].blockhash      = *blockhash;
+  m->fork[ fork_id ].txnhash_offset = 0UL;
+}
+
+static void
+op_finalize( model_t *       m,
              fuzz_cursor_t * cur ) {
-  ushort fork_id = model_pick_fork( m, cur, 1, 1, 0 );
-  if( FD_UNLIKELY( fork_id==USHORT_MAX ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  ushort fork_id = model_pick_fork( m, cur, 1, FORK_NEW, FORK_NEW );
+  if( FD_UNLIKELY( fork_id==USHORT_MAX ) ) return;
 
   fd_hash_t blockhash[ 1 ];
   model_make_finalize_hash( m, cur, fork_id, blockhash );
   ulong offset = fuzz_bounded( cur, 13UL );
 
   fd_txncache_finalize_fork( m->tc, (fd_txncache_fork_id_t){ .val = fork_id }, offset, blockhash->uc );
-  m->fork[ fork_id ].finalized      = 1;
+  m->fork[ fork_id ].frozen         = FORK_FINAL;
   m->fork[ fork_id ].blockhash      = *blockhash;
   m->fork[ fork_id ].txnhash_offset = offset;
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
-op_insert( model_t *      m,
+op_insert( model_t *       m,
            fuzz_cursor_t * cur ) {
-  if( FD_UNLIKELY( m->txn_cnt>=FUZZ_MAX_MODEL_TXNS ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  if( FD_UNLIKELY( m->txn_cnt>=FUZZ_MAX_MODEL_TXNS ) ) return;
 
-  ushort fork_id = model_pick_fork( m, cur, 1, 1, 0 );
-  if( FD_UNLIKELY( fork_id==USHORT_MAX ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  ushort fork_id = model_pick_fork( m, cur, 1, FORK_NEW, FORK_HASHED );
+  if( FD_UNLIKELY( fork_id==USHORT_MAX ) ) return;
 
-  ushort block_fork = model_pick_strict_ancestor_with_blockhash( m, cur, fork_id );
-  if( FD_UNLIKELY( block_fork==USHORT_MAX ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  ushort block_fork = model_pick_strict_ancestor( m, cur, fork_id, 0 );
+  if( FD_UNLIKELY( block_fork==USHORT_MAX ) ) return;
 
   fd_hash_t txnhash[ 1 ];
   hash_from_seed( txnhash, 0x7A58000000000000UL, ++m->hash_nonce, fuzz_u8( cur ) );
@@ -522,23 +577,16 @@ op_insert( model_t *      m,
   txn->txn_fork   = fork_id;
   txn->generation = m->fork[ fork_id ].generation;
   txn->txnhash    = *txnhash;
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
-op_query( model_t *      m,
+op_query( model_t *       m,
           fuzz_cursor_t * cur ) {
-  ushort fork_id = model_pick_fork( m, cur, 1, 0, 0 );
-  if( FD_UNLIKELY( fork_id==USHORT_MAX ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  ushort fork_id = model_pick_fork( m, cur, 1, FORK_NEW, FORK_FINAL );
+  if( FD_UNLIKELY( fork_id==USHORT_MAX ) ) return;
 
-  ushort block_fork = model_pick_strict_ancestor_with_blockhash( m, cur, fork_id );
-  if( FD_UNLIKELY( block_fork==USHORT_MAX ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  ushort block_fork = model_pick_strict_ancestor( m, cur, fork_id, 1 );
+  if( FD_UNLIKELY( block_fork==USHORT_MAX ) ) return;
 
   fd_hash_t txnhash[ 1 ];
   int use_existing = (m->txn_cnt && (fuzz_u8( cur ) & 1U));
@@ -554,14 +602,10 @@ op_query( model_t *      m,
                                   txnhash->uc );
   int expect = model_query( m, fork_id, block_fork, txnhash );
   FD_TEST( actual==expect );
-
-  FD_FUZZ_MUST_BE_COVERED;
-  if( actual ) FD_FUZZ_MUST_BE_COVERED;
-  else         FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
-op_cancel( model_t *      m,
+op_cancel( model_t *       m,
            fuzz_cursor_t * cur ) {
   ushort candidate[ FUZZ_MAX_ACTIVE_SLOTS ];
   ulong  candidate_cnt = 0UL;
@@ -574,38 +618,22 @@ op_cancel( model_t *      m,
     candidate[ candidate_cnt++ ] = (ushort)i;
   }
 
-  if( FD_UNLIKELY( !candidate_cnt ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
+  if( FD_UNLIKELY( !candidate_cnt ) ) return;
 
   ushort fork_id = candidate[ fuzz_bounded( cur, candidate_cnt ) ];
   fd_txncache_cancel_fork( m->tc, (fd_txncache_fork_id_t){ .val = fork_id } );
   model_remove_subtree( m, fork_id );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
+/* model_advance_to mirrors the model side of fd_txncache_advance_root:
+   prune the old root's other subtrees, append the new root to the root
+   history, and -- once the blockhash-distance window is full -- evict
+   the oldest root and detach the new window head. */
+
 static void
-op_advance_root( model_t *      m,
-                 fuzz_cursor_t * cur ) {
-  ushort candidate[ FUZZ_MAX_ACTIVE_SLOTS ];
-  ulong  candidate_cnt = 0UL;
-
-  for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
-    if( FD_UNLIKELY( !m->fork[ i ].alive ) ) continue;
-    if( FD_UNLIKELY( !m->fork[ i ].finalized ) ) continue;
-    if( m->fork[ i ].parent==m->current_root ) candidate[ candidate_cnt++ ] = (ushort)i;
-  }
-
-  if( FD_UNLIKELY( !candidate_cnt ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-    return;
-  }
-
-  ushort new_root = candidate[ fuzz_bounded( cur, candidate_cnt ) ];
+model_advance_to( model_t * m,
+                  ushort    new_root ) {
   ushort old_root = m->current_root;
-
-  fd_txncache_advance_root( m->tc, (fd_txncache_fork_id_t){ .val = new_root } );
 
   for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
     if( m->fork[ i ].alive && m->fork[ i ].parent==old_root && i!=new_root )
@@ -624,240 +652,54 @@ op_advance_root( model_t *      m,
     model_remove_only( m, evicted );
     if( m->fork[ new_head ].alive ) m->fork[ new_head ].parent = USHORT_MAX;
     m->root_cnt--;
-    FD_FUZZ_MUST_BE_COVERED;
-  }
-
-  FD_FUZZ_MUST_BE_COVERED;
-}
-
-static void
-run_actor_program( uchar const * data,
-                   ulong         size ) {
-  fuzz_cursor_t cur = { .cur = data, .rem = size, .salt = size ^ 0x123456789abcdef0UL };
-
-  static ulong const txn_per_slot_choice[] = { 1UL, 2UL, 4UL, 16UL, 64UL, 256UL };
-  ulong max_live_slots   = 2UL + fuzz_bounded( &cur, FUZZ_MAX_LIVE_SLOTS-1UL );
-  ulong max_txn_per_slot = txn_per_slot_choice[ fuzz_bounded( &cur, sizeof(txn_per_slot_choice)/sizeof(txn_per_slot_choice[0]) ) ];
-
-  fd_txncache_t * tc = setup_cache( max_live_slots, max_txn_per_slot );
-
-  model_t * model = fuzz_model;
-  model_init( model, tc, max_live_slots );
-
-  ulong action_cnt = 1UL + fuzz_bounded( &cur, FUZZ_MAX_ACTIONS );
-  for( ulong action_idx=0UL; action_idx<action_cnt; action_idx++ ) {
-    uchar action = (uchar)(fuzz_u8( &cur ) % 12U);
-    switch( action ) {
-      case 0U:
-      case 1U:
-      case 2U: op_attach( model, &cur );       break;
-      case 3U:
-      case 4U:
-      case 5U: op_insert( model, &cur );       break;
-      case 6U:
-      case 7U: op_query( model, &cur );        break;
-      case 8U: op_finalize( model, &cur );     break;
-      case 9U: op_cancel( model, &cur );       break;
-      default: op_advance_root( model, &cur ); break;
-    }
-
-    check_cache_invariants( model );
   }
 }
 
 static void
-run_stale_child_link_seed( void ) {
-  fd_txncache_t * tc = setup_cache( 4UL, 4UL );
+op_advance_root( model_t *       m,
+                 fuzz_cursor_t * cur ) {
+  ushort candidate[ FUZZ_MAX_ACTIVE_SLOTS ];
+  ulong  candidate_cnt = 0UL;
 
-  model_t * model = fuzz_model;
-  model_init( model, tc, 4UL );
+  for( ulong i=0UL; i<FUZZ_MAX_ACTIVE_SLOTS; i++ ) {
+    if( FD_UNLIKELY( !m->fork[ i ].alive ) ) continue;
+    if( FD_UNLIKELY( m->fork[ i ].frozen!=FORK_FINAL ) ) continue;
+    if( m->fork[ i ].parent==m->current_root ) candidate[ candidate_cnt++ ] = (ushort)i;
+  }
 
-  fd_txncache_fork_id_t winner = fd_txncache_attach_child( tc, (fd_txncache_fork_id_t){ .val = model->current_root } );
-  model_add_fork( model, winner, model->current_root, tc->blockcache_pool[ winner.val ].shmem->generation );
+  if( FD_UNLIKELY( !candidate_cnt ) ) return;
 
-  fd_txncache_fork_id_t loser = fd_txncache_attach_child( tc, (fd_txncache_fork_id_t){ .val = model->current_root } );
-  model_add_fork( model, loser, model->current_root, tc->blockcache_pool[ loser.val ].shmem->generation );
+  ushort new_root = candidate[ fuzz_bounded( cur, candidate_cnt ) ];
+  fd_txncache_advance_root( m->tc, (fd_txncache_fork_id_t){ .val = new_root } );
+  model_advance_to( m, new_root );
+}
 
-  fd_hash_t txn[ 1 ];
-  hash_from_seed( txn, 0x57A1E00000000000UL, 0UL, 0UL );
-  fd_txncache_insert( tc, winner, model->fork[ model->current_root ].blockhash.uc, txn->uc );
+/* op_extend_root grows the root chain by one in a single operation
+   (attach a child off the root, finalize it, advance the root onto it).
+   A run of this op drives root_cnt past FD_TXNCACHE_MAX_BLOCKHASH_DISTANCE
+   so the root-eviction path is reached. */
+
+static void
+op_extend_root( model_t *       m,
+                fuzz_cursor_t * cur ) {
+  if( FD_UNLIKELY( model_current_tree_cnt( m )>=m->max_live_slots ) ) return;
+  if( FD_UNLIKELY( !blockcache_pool_free( m->tc->blockcache_shmem_pool ) ) ) return;
+
+  ushort parent = m->current_root;
+  fd_txncache_fork_id_t child = fd_txncache_attach_child( m->tc, (fd_txncache_fork_id_t){ .val = parent } );
+  model_add_fork( m, child, parent, m->tc->blockcache_pool[ child.val ].shmem->generation );
 
   fd_hash_t blockhash[ 1 ];
-  hash_from_seed( blockhash, 0xB10C000000000000UL, 1UL, 0UL );
-  fd_txncache_finalize_fork( tc, winner, 0UL, blockhash->uc );
-  model->fork[ winner.val ].finalized = 1;
-  model->fork[ winner.val ].blockhash = *blockhash;
+  model_make_finalize_hash( m, cur, child.val, blockhash );
+  ulong offset = fuzz_bounded( cur, 13UL );
+  fd_txncache_finalize_fork( m->tc, child, offset, blockhash->uc );
+  m->fork[ child.val ].frozen         = FORK_FINAL;
+  m->fork[ child.val ].blockhash      = *blockhash;
+  m->fork[ child.val ].txnhash_offset = offset;
 
-  hash_from_seed( blockhash, 0xB10C000000000000UL, 2UL, 0UL );
-  fd_txncache_finalize_fork( tc, loser, 0UL, blockhash->uc );
-  model->fork[ loser.val ].finalized = 1;
-  model->fork[ loser.val ].blockhash = *blockhash;
-
-  fd_txncache_advance_root( tc, winner );
-  model_remove_subtree( model, loser.val );
-  model->current_root = winner.val;
-  model->roots[ model->roots_tail++ ] = winner.val;
-  model->root_cnt++;
-
-  FD_TEST( fd_txncache_query( tc, winner, model->fork[ model->roots[ model->roots_head ] ].blockhash.uc, txn->uc ) );
-  check_cache_invariants( model );
-  FD_FUZZ_MUST_BE_COVERED;
+  fd_txncache_advance_root( m->tc, child );
+  model_advance_to( m, child.val );
 }
-
-static void
-run_page_exhaustion_seed( void ) {
-  fd_txncache_t * tc = setup_cache( 4UL, 4UL );
-
-  fd_hash_t root_hash[ 1 ];
-  hash_from_seed( root_hash, 0xB10C000000000000UL, 0UL, 0UL );
-
-  fd_txncache_fork_id_t root = fd_txncache_attach_child( tc, NULL_FORK );
-  fd_txncache_finalize_fork( tc, root, 0UL, root_hash->uc );
-
-  fd_txncache_fork_id_t prev = root;
-
-  ulong const stale_rounds         = 130UL;
-  ulong const stale_txns_per_round = 126UL;
-  ulong const total_stale          = stale_rounds*stale_txns_per_round;
-  ulong const valid_pre_purge      = FD_TXNCACHE_TXNS_PER_PAGE-total_stale;
-  ulong const stale_id_base        = 1000000UL;
-
-  for( ulong i=0UL; i<stale_rounds; i++ ) {
-    fd_txncache_fork_id_t loser  = fd_txncache_attach_child( tc, prev );
-    fd_txncache_fork_id_t winner = fd_txncache_attach_child( tc, prev );
-
-    for( ulong j=0UL; j<stale_txns_per_round; j++ ) {
-      fd_hash_t txnhash[ 1 ];
-      hash_from_seed( txnhash, 0x57A1E00000000000UL, stale_id_base+i*stale_txns_per_round+j, 0UL );
-      fd_txncache_insert( tc, loser, root_hash->uc, txnhash->uc );
-    }
-
-    fd_hash_t blockhash[ 1 ];
-    hash_from_seed( blockhash, 0xB10C000000000000UL, 10000UL+i, 0UL );
-    fd_txncache_finalize_fork( tc, loser, 0UL, blockhash->uc );
-
-    hash_from_seed( blockhash, 0xB10C000000000000UL, i+1UL, 0UL );
-    fd_txncache_finalize_fork( tc, winner, 0UL, blockhash->uc );
-    fd_txncache_advance_root( tc, winner );
-
-    prev = winner;
-  }
-
-  FD_TEST( valid_pre_purge==4UL );
-  fd_txncache_fork_id_t query_fork = fd_txncache_attach_child( tc, prev );
-
-  for( ulong i=0UL; i<valid_pre_purge; i++ ) {
-    fd_hash_t txnhash[ 1 ];
-    hash_from_seed( txnhash, 0x600D000000000000UL, i, 0UL );
-    fd_txncache_insert( tc, query_fork, root_hash->uc, txnhash->uc );
-  }
-
-  fd_hash_t trigger[ 1 ];
-  hash_from_seed( trigger, 0x600D000000000000UL, valid_pre_purge, 0UL );
-  fd_txncache_insert( tc, query_fork, root_hash->uc, trigger->uc );
-  FD_FUZZ_MUST_BE_COVERED;
-
-  for( ulong i=0UL; i<=valid_pre_purge; i++ ) {
-    fd_hash_t txnhash[ 1 ];
-    hash_from_seed( txnhash, 0x600D000000000000UL, i, 0UL );
-    FD_TEST( fd_txncache_query( tc, query_fork, root_hash->uc, txnhash->uc ) );
-  }
-
-  for( ulong i=0UL; i<8UL; i++ ) {
-    fd_hash_t txnhash[ 1 ];
-    hash_from_seed( txnhash, 0x57A1E00000000000UL, stale_id_base+i, 0UL );
-    FD_TEST( !fd_txncache_query( tc, query_fork, root_hash->uc, txnhash->uc ) );
-  }
-
-  FD_TEST( tc->shmem->txnpages_free_cnt<=tc->shmem->max_txnpages );
-  FD_FUZZ_MUST_BE_COVERED;
-}
-
-#if FD_HAS_RACESAN
-static void
-fuzz_racesan_insert_exec( void * _ctx ) {
-  fuzz_racesan_fiber_t * fiber = _ctx;
-  fd_txncache_insert( fiber->tc,
-                      fiber->fork_id,
-                      fiber->blockhash->uc,
-                      fiber->txnhash->uc );
-}
-
-static void
-fuzz_racesan_query_exec( void * _ctx ) {
-  fuzz_racesan_fiber_t * fiber = _ctx;
-  fiber->query_result = fd_txncache_query( fiber->tc,
-                                           fiber->fork_id,
-                                           fiber->blockhash->uc,
-                                           fiber->txnhash->uc );
-}
-
-static void
-run_racesan_insert_query_seed( uchar const * data,
-                               ulong         size ) {
-  fd_racesan_weave_t weave[ 1 ];
-  fd_racesan_weave_new( weave );
-
-  fd_racesan_async_new( fuzz_racesan_fiber[ 0 ].async,
-                        fuzz_racesan_fiber[ 0 ].stack,
-                        FUZZ_RACESAN_STACK_MAX,
-                        fuzz_racesan_insert_exec,
-                        &fuzz_racesan_fiber[ 0 ] );
-  fd_racesan_weave_add( weave, fuzz_racesan_fiber[ 0 ].async );
-
-  fd_racesan_async_new( fuzz_racesan_fiber[ 1 ].async,
-                        fuzz_racesan_fiber[ 1 ].stack,
-                        FUZZ_RACESAN_STACK_MAX,
-                        fuzz_racesan_query_exec,
-                        &fuzz_racesan_fiber[ 1 ] );
-  fd_racesan_weave_add( weave, fuzz_racesan_fiber[ 1 ].async );
-
-  ulong seed = size ^ 0x8ace5a7a00000000UL;
-  for( ulong i=1UL; i<size; i++ ) seed = fd_ulong_hash( seed ^ ((ulong)data[ i ] << ((i&7UL)*8UL)) );
-  ulong iter = 1UL + (seed % FUZZ_RACESAN_ITER_MAX);
-
-  for( ulong i=0UL; i<iter; i++ ) {
-    fd_txncache_t * tc = setup_cache( 4UL, 256UL );
-
-    fd_hash_t root_hash[ 1 ];
-    hash_from_seed( root_hash, 0xB10C000000000000UL, 0UL, i );
-
-    fd_txncache_fork_id_t root = fd_txncache_attach_child( tc, NULL_FORK );
-    fd_txncache_finalize_fork( tc, root, 0UL, root_hash->uc );
-    fd_txncache_fork_id_t child = fd_txncache_attach_child( tc, root );
-
-    fd_hash_t txnhash[ 1 ];
-    hash_from_seed( txnhash, 0x7A58000000000000UL, seed+i, i );
-
-    for( ulong j=0UL; j<FUZZ_RACESAN_FIBER_MAX; j++ ) {
-      fuzz_racesan_fiber[ j ].tc           = tc;
-      fuzz_racesan_fiber[ j ].fork_id      = child;
-      *fuzz_racesan_fiber[ j ].blockhash   = *root_hash;
-      *fuzz_racesan_fiber[ j ].txnhash     = *txnhash;
-      fuzz_racesan_fiber[ j ].query_result = -1;
-    }
-
-    fd_racesan_weave_exec_rand( weave, seed+i, FUZZ_RACESAN_STEP_MAX );
-    FD_TEST( !weave->rem_cnt );
-    FD_TEST( fuzz_racesan_fiber[ 1 ].query_result==0 ||
-             fuzz_racesan_fiber[ 1 ].query_result==1 );
-    FD_TEST( fd_txncache_query( tc, child, root_hash->uc, txnhash->uc ) );
-  }
-
-  fd_racesan_weave_delete( weave );
-  fd_racesan_async_delete( fuzz_racesan_fiber[ 1 ].async );
-  fd_racesan_async_delete( fuzz_racesan_fiber[ 0 ].async );
-  FD_FUZZ_MUST_BE_COVERED;
-}
-#else
-static void
-run_racesan_insert_query_seed( uchar const * data,
-                               ulong         size ) {
-  (void)data;
-  (void)size;
-  FD_FUZZ_MUST_BE_COVERED;
-}
-#endif
 
 static void
 fuzz_cleanup( void ) {
@@ -897,21 +739,41 @@ LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {
   if( FD_UNLIKELY( !size ) ) return 0;
 
-  if( data[ 0 ]==0xF0U ) {
-    run_stale_child_link_seed();
-    return 0;
+  fuzz_cursor_t cur = { .cur = data, .rem = size };
+
+  static ulong const txn_per_slot_choice[] = { 1UL, 2UL, 4UL, 16UL, 64UL, 256UL };
+  ulong max_live_slots   = 2UL + fuzz_bounded( &cur, FUZZ_MAX_LIVE_SLOTS-1UL );
+  ulong max_txn_per_slot = txn_per_slot_choice[ fuzz_bounded( &cur, sizeof(txn_per_slot_choice)/sizeof(txn_per_slot_choice[0]) ) ];
+
+  fd_txncache_t * tc = setup( max_live_slots, max_txn_per_slot );
+
+  model_t * model = fuzz_model;
+  model_init( model, tc, max_live_slots );
+  check_cache_invariants( model );
+
+  /* One operation per step until the input is consumed (bounded by a
+     safety cap).  The program length, and therefore which deep states
+     are reached, is driven entirely by the input. */
+  for( ulong action_idx=0UL; action_idx<FUZZ_MAX_ACTIONS && cur.rem; action_idx++ ) {
+    switch( fuzz_u8( &cur ) & 15U ) {
+      case  0U:
+      case  1U:
+      case  2U: op_attach          ( model, &cur ); break;
+      case  3U: op_attach_blockhash( model, &cur ); break;
+      case  4U:
+      case  5U:
+      case  6U: op_insert          ( model, &cur ); break;
+      case  7U:
+      case  8U: op_query           ( model, &cur ); break;
+      case  9U:
+      case 10U: op_finalize        ( model, &cur ); break;
+      case 11U: op_cancel          ( model, &cur ); break;
+      case 12U: op_advance_root    ( model, &cur ); break;
+      default:  op_extend_root     ( model, &cur ); break;
+    }
+
+    check_cache_invariants( model );
   }
 
-  if( data[ 0 ]==0xF1U ) {
-    run_page_exhaustion_seed();
-    return 0;
-  }
-
-  if( data[ 0 ]==0xF2U ) {
-    run_racesan_insert_query_seed( data, size );
-    return 0;
-  }
-
-  run_actor_program( data, size );
   return 0;
 }

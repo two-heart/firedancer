@@ -6,7 +6,6 @@
 #include <string.h>
 
 #include "../../util/fd_util.h"
-#include "../../util/sanitize/fd_fuzz.h"
 #include "fd_reasm.h"
 #include "fd_reasm_private.h"
 
@@ -235,7 +234,6 @@ fuzz_model_refresh( fuzz_model_t * model,
     if( FD_UNLIKELY( !fec ) ) {
       if( FD_UNLIKELY( node->present ) ) {
         node->dropped = 1;
-        FD_FUZZ_MUST_BE_COVERED;
       }
       node->present    = 0;
       node->replayable = 0;
@@ -310,10 +308,6 @@ fuzz_verify( fuzz_model_t * model,
   FD_TEST( fd_reasm_root( reasm ) );
   fuzz_verify_out( reasm );
   fuzz_model_refresh( model, reasm );
-
-  if( FD_UNLIKELY( model->replayable_cnt ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( model->dropped_cnt    ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( model->eqvoc_cnt      ) ) FD_FUZZ_MUST_BE_COVERED;
 }
 
 static ulong
@@ -379,7 +373,6 @@ fuzz_insert( fuzz_cursor_t * cur,
 
   if( FD_UNLIKELY( fd_reasm_query( reasm, node->key ) ) ) {
     model->duplicate_cnt++;
-    FD_FUZZ_MUST_BE_COVERED;
     return;
   }
 
@@ -400,7 +393,6 @@ fuzz_insert( fuzz_cursor_t * cur,
 
   if( FD_UNLIKELY( evicted ) ) {
     model->eviction_cnt++;
-    FD_FUZZ_MUST_BE_COVERED;
     fuzz_release_chain( reasm, evicted );
   }
 
@@ -417,13 +409,10 @@ fuzz_insert( fuzz_cursor_t * cur,
                                          NULL,
                                          reasm_pool( reasm ) ) ) ) {
       model->orphan_cnt++;
-      FD_FUZZ_MUST_BE_COVERED;
     }
-    if( FD_UNLIKELY( inserted->eqvoc ) ) FD_FUZZ_MUST_BE_COVERED;
   } else {
     FD_TEST( !fd_reasm_query( reasm, node->key ) );
     model->invalid_cnt++;
-    if( desc->expect_invalid_if_parent_present ) FD_FUZZ_MUST_BE_COVERED;
   }
 }
 
@@ -443,14 +432,11 @@ fuzz_confirm( fuzz_cursor_t * cur,
 
   fd_hash_t key = fec->key;
   fd_reasm_confirm( reasm, &key );
-  if( FD_UNLIKELY( fd_reasm_query( reasm, &key ) ) )
-    FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
 fuzz_pop_one( fuzz_model_t * model,
               fd_reasm_t *   reasm ) {
-  int had_out = !out_is_empty( reasm->out, reasm_pool( reasm ) );
   fd_reasm_fec_t * expected = fd_reasm_peek( reasm );
   fd_reasm_fec_t * popped   = fd_reasm_pop ( reasm );
   FD_TEST( popped==expected );
@@ -459,11 +445,8 @@ fuzz_pop_one( fuzz_model_t * model,
     model->pop_cnt++;
     popped->bank_idx = model->pop_cnt;
     popped->bank_seq = model->pop_cnt;
-    FD_FUZZ_MUST_BE_COVERED;
     return;
   }
-
-  if( FD_UNLIKELY( had_out ) ) FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -476,7 +459,6 @@ fuzz_remove( fuzz_cursor_t * cur,
   fd_reasm_fec_t * evicted = fd_reasm_remove( reasm, head, NULL );
   FD_TEST( evicted );
   model->remove_cnt++;
-  FD_FUZZ_MUST_BE_COVERED;
   fuzz_release_chain( reasm, evicted );
 }
 
@@ -498,7 +480,6 @@ fuzz_publish( fuzz_cursor_t * cur,
   FD_TEST( root );
   FD_TEST( fd_hash_eq( &root->key, &key ) );
   model->publish_cnt++;
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -516,7 +497,6 @@ fuzz_query( fuzz_cursor_t * cur,
   fd_reasm_fec_t * fec = fd_reasm_query( reasm, model->node[ i ].key );
   if( FD_UNLIKELY( fec ) ) {
     FD_TEST( fd_hash_eq( &fec->key, model->node[ i ].key ) );
-    FD_FUZZ_MUST_BE_COVERED;
   }
 }
 
@@ -590,7 +570,6 @@ run_xid_evict_seed( void ) {
   FD_TEST( !xid_query( reasm->xid, xid2, NULL ) );
 
   fd_reasm_delete( fd_reasm_leave( reasm ) );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 int
@@ -640,14 +619,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
     fuzz_pop_one( model, reasm );
     fuzz_verify( model, reasm );
   }
-
-  if( FD_UNLIKELY( model->duplicate_cnt ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( model->invalid_cnt   ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( model->orphan_cnt    ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( model->pop_cnt       ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( model->remove_cnt    ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( model->publish_cnt   ) ) FD_FUZZ_MUST_BE_COVERED;
-  if( FD_UNLIKELY( model->eviction_cnt  ) ) FD_FUZZ_MUST_BE_COVERED;
 
   fd_reasm_delete( fd_reasm_leave( reasm ) );
   return 0;

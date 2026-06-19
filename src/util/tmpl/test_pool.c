@@ -31,6 +31,21 @@ typedef struct myele myele_t;
 #define POOL_MAGIC    0x2UL
 #include "fd_pool.c"
 
+#if FD_HAS_DEEPASAN
+struct poison_ele {
+  ulong pool_next;
+  ulong val[3];
+} __attribute__((aligned(16)));
+
+typedef struct poison_ele poison_ele_t;
+
+#define POOL_NAME     poison_pool
+#define POOL_T        poison_ele_t
+#define POOL_NEXT     pool_next
+#define POOL_MAGIC    0x3UL
+#include "fd_pool.c"
+#endif
+
 #define ACQUIRED_MAX (1024UL)
 static ushort acquired_idx[ ACQUIRED_MAX ];
 static ulong  acquired_cnt = 0UL;
@@ -38,6 +53,9 @@ static ulong  acquired_cnt = 0UL;
 #define SCRATCH_ALIGN     (128UL)
 #define SCRATCH_FOOTPRINT (1024UL)
 static uchar scratch[ SCRATCH_FOOTPRINT ] __attribute__((aligned(SCRATCH_ALIGN)));
+#if FD_HAS_DEEPASAN
+static uchar poison_scratch[ 1024UL ] __attribute__((aligned(SCRATCH_ALIGN)));
+#endif
 
 int
 main( int     argc,
@@ -85,6 +103,27 @@ main( int     argc,
   FD_TEST( !mypool_new( scratch,     1UL<<16   ) ); /* Overflow POOL_IDX_NULL */
   FD_TEST( !mypool_new( scratch,     ULONG_MAX ) ); /* Overflow */
   void * shpool = mypool_new ( scratch, max ); FD_TEST( shpool );
+
+# if FD_HAS_DEEPASAN
+  FD_LOG_NOTICE(( "Testing sanitizer annotations" ));
+
+  void * poison_shpool = poison_pool_new( poison_scratch, 3UL ); FD_TEST( poison_shpool );
+  poison_ele_t * poison_pool = poison_pool_join( poison_shpool ); FD_TEST( poison_pool );
+
+  FD_TEST( !fd_asan_test ( &poison_pool[0].pool_next ) );
+  FD_TEST( !fd_asan_query( poison_pool, 3UL*sizeof(poison_ele_t) ) );
+
+  poison_ele_t * poison_ele = poison_pool_ele_acquire( poison_pool );
+  FD_TEST( poison_ele==poison_pool );
+  FD_TEST( !fd_asan_query( poison_ele, sizeof(poison_ele_t) ) );
+
+  poison_pool_ele_release( poison_pool, poison_ele );
+  FD_TEST( !fd_asan_test( &poison_ele->pool_next ) );
+  FD_TEST( !fd_asan_test( &poison_ele->val[0]    ) );
+
+  FD_TEST( poison_pool_delete( poison_pool_leave( poison_pool ) )==poison_shpool );
+  FD_TEST( !fd_asan_query( poison_pool, 3UL*sizeof(poison_ele_t) ) );
+# endif
 
   FD_TEST( !mypool_join( NULL        ) ); /* NULL       shpool */
   FD_TEST( !mypool_join( (void *)1UL ) ); /* misaligned shpool */
@@ -384,4 +423,3 @@ main( int     argc,
   fd_halt();
   return 0;
 }
-

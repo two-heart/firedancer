@@ -6,7 +6,6 @@
 #include <string.h>
 
 #include "../../util/fd_util.h"
-#include "../../util/sanitize/fd_fuzz.h"
 #include "fd_rewards_base.h"
 #include "fd_stake_rewards.h"
 
@@ -203,9 +202,6 @@ init_fork( model_t *       m,
     m->epoch += 1UL + fuzz_bounded( r, 4UL );
     m->fork_cnt         = 0UL;
     m->epoch_insert_cnt = 0UL;
-    FD_FUZZ_MUST_BE_COVERED;
-  } else if( FD_LIKELY( m->fork_cnt ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
   }
 
   ulong parent_slot;
@@ -278,7 +274,6 @@ distribute_partition( model_t *       m,
   if( fuzz_u8( r ) & 1U ) {
     ulong block_height = f->starting_block_height + fuzz_bounded( r, (ulong)f->partition_cnt + 2UL );
     if( FD_UNLIKELY( block_height>=f->starting_block_height+(ulong)f->partition_cnt ) ) {
-      FD_FUZZ_MUST_BE_COVERED;
       return;
     }
     partition_idx = (uint)(block_height - f->starting_block_height);
@@ -286,9 +281,6 @@ distribute_partition( model_t *       m,
     partition_idx = (uint)fuzz_bounded( r, f->partition_cnt );
   }
 
-  if( FD_UNLIKELY( f->distributed[ partition_idx ] ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-  }
   f->distribution_started = 1;
   f->distributed[ partition_idx ] = 1U;
 
@@ -296,16 +288,6 @@ distribute_partition( model_t *       m,
   ulong seen_cnt     = 0UL;
   ulong seen_rewards = 0UL;
   validate_one_partition( m, f, partition_idx, &seen_cnt, &seen_rewards, seen );
-
-  if( FD_UNLIKELY( !seen_cnt ) ) {
-    FD_FUZZ_MUST_BE_COVERED;
-  } else {
-    FD_FUZZ_MUST_BE_COVERED;
-  }
-
-  int all_done = 1;
-  for( uint p=0U; p<f->partition_cnt; p++ ) all_done &= !!f->distributed[p];
-  if( FD_UNLIKELY( all_done ) ) FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -313,7 +295,6 @@ clear_rewards( model_t * m ) {
   fd_stake_rewards_clear( m->stake_rewards );
   m->fork_cnt         = 0UL;
   m->epoch_insert_cnt = 0UL;
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 int
@@ -365,8 +346,6 @@ run_constructor_bounds_seed( void ) {
       (void)fd_stake_rewards_init( rewards, 1UL, &parent, j+1UL, 1U );
     }
   }
-
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 int

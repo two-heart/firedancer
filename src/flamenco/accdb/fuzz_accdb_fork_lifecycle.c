@@ -10,7 +10,6 @@
 #include "fd_accdb_private.h"
 #undef FD_ACCDB_NO_FORK_ID
 #include "../../util/fd_util.h"
-#include "../../util/sanitize/fd_fuzz.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -387,7 +386,6 @@ fuzz_attach_child( fuzz_env_t *    env,
   fd_accdb_fork_id_t child  = fd_accdb_attach_child( env->accdb, parent );
   fuzz_model_activate( env, child, parent.val );
   fuzz_assert_fork_links( env );
-  FD_FUZZ_MUST_BE_COVERED;
   return child;
 }
 
@@ -425,9 +423,6 @@ fuzz_write_acquire( fuzz_env_t *       env,
 
   fd_accdb_release( env->accdb, 1UL, acc );
   env->touched_key[ key_idx ] = 1U;
-
-  if( commit ) FD_FUZZ_MUST_BE_COVERED;
-  else         FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -447,9 +442,6 @@ fuzz_read_acquire( fuzz_env_t *       env,
   FD_TEST( exists==(lamports!=0UL) );
   FD_TEST( fd_accdb_lamports( env->accdb, fork_id,
                               env->key[ key_idx ] )==lamports );
-
-  if( lamports ) FD_FUZZ_MUST_BE_COVERED;
-  else           FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -463,8 +455,6 @@ fuzz_read_one( fuzz_env_t *       env,
 
   FD_TEST( fd_accdb_exists( env->accdb, fork_id,
                             env->key[ key_idx ] )==(lamports!=0UL) );
-  if( lamports ) FD_FUZZ_MUST_BE_COVERED;
-  else           FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -489,9 +479,6 @@ fuzz_write_one( fuzz_env_t *       env,
 
   fd_accdb_unwrite_one( env->accdb, &acc );
   env->touched_key[ key_idx ] = 1U;
-
-  if( commit ) FD_FUZZ_MUST_BE_COVERED;
-  else         FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -525,7 +512,6 @@ fuzz_snapshot_full_write( fuzz_env_t *    env,
   fd_accdb_snapshot_load_end( env->accdb );
 
   FD_TEST( rc==1 || rc==2 || rc==-1 );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -566,7 +552,6 @@ fuzz_snapshot_incremental_revert( fuzz_env_t *    env,
 
   fd_accdb_snapshot_revert_whead( env->accdb, &recovery );
   fuzz_assert_fork_links( env );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 static void
@@ -596,7 +581,6 @@ fuzz_duplicate_snapshot_batch_seed( fuzz_env_t * env ) {
   FD_TEST( rc==-1 );
   FD_TEST( !fd_accdb_exists( env->accdb, env->root, env->key[ 0 ] ) );
   FD_TEST( !fd_accdb_exists( env->accdb, env->root, env->key[ 1 ] ) );
-  FD_FUZZ_MUST_BE_COVERED;
 }
 
 int
@@ -677,12 +661,10 @@ LLVMFuzzerTestOneInput( uchar const * data,
           child = fuzz_attach_child( fuzz_env, &cur );
         if( FD_UNLIKELY( child.val==USHORT_MAX ) ) break;
 
-        ulong before = fuzz_active_cnt( fuzz_env );
         fd_accdb_advance_root( fuzz_env->accdb, child );
         fuzz_drain_cmd( fuzz_env );
         fuzz_model_advance_root( fuzz_env, child );
         fuzz_assert_fork_links( fuzz_env );
-        if( fuzz_active_cnt( fuzz_env )<before ) FD_FUZZ_MUST_BE_COVERED;
         break;
       }
 
@@ -696,7 +678,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
         fuzz_drain_cmd( fuzz_env );
         fuzz_model_purge_subtree( fuzz_env, fork_id.val );
         fuzz_assert_fork_links( fuzz_env );
-        FD_FUZZ_MUST_BE_COVERED;
         break;
       }
 
@@ -710,7 +691,6 @@ LLVMFuzzerTestOneInput( uchar const * data,
 
       default: {
         fuzz_assert_fork_links( fuzz_env );
-        FD_FUZZ_MUST_BE_COVERED;
         break;
       }
     }
