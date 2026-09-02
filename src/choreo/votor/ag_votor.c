@@ -716,6 +716,20 @@ ag_votor_poll_timeout_event( ag_votor_t *         self,
   return 0;
 }
 
+long
+ag_votor_next_timeout( ag_votor_t const * self ) {
+  long next = LONG_MAX;
+
+  slot_state_ele_t const * pool = self->slot_states->pool;
+  for( timeout_dlist_iter_t iter = timeout_dlist_iter_fwd_init( self->timeout_dlist, pool );
+                                  !timeout_dlist_iter_done( iter, self->timeout_dlist, pool );
+                            iter = timeout_dlist_iter_fwd_next( iter, self->timeout_dlist, pool ) ) {
+    slot_state_ele_t const * ele = timeout_dlist_iter_ele_const( iter, self->timeout_dlist, pool );
+    next = fd_long_min( next, fd_long_min( ele->timeout, ele->timeout_crashed_leader ) );
+  }
+  return next;
+}
+
 int
 ag_votor_poll_vote_event( ag_votor_t *      self,
                           ag_event_vote_t * event ) {

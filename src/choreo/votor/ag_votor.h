@@ -74,6 +74,13 @@ ag_votor_poll_timeout_event( ag_votor_t *         self,
                              long                 now,
                              ag_event_timeout_t * event );
 
+/* Returns the earliest armed timeout deadline, or LONG_MAX if no timeout is
+   armed.  This is primarily useful to event-driven callers which advance a
+   virtual clock directly to the next state transition. */
+
+FD_FN_PURE long
+ag_votor_next_timeout( ag_votor_t const * self );
+
 int
 ag_votor_poll_vote_event( ag_votor_t *      self,
                           ag_event_vote_t * event );

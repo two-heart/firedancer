@@ -14,6 +14,7 @@ $(call make-unit-test,test_ag_slot_state,test_ag_slot_state,fd_choreo fd_ballet 
 $(call make-unit-test,test_ag_finality_tracker,test_ag_finality_tracker,fd_choreo fd_ballet fd_util)
 $(call make-unit-test,test_ag_parent_ready_tracker,test_ag_parent_ready_tracker,fd_choreo fd_ballet fd_util)
 $(call make-unit-test,test_ag_votor,test_ag_votor,fd_choreo fd_ballet fd_util)
+$(call make-unit-test,test_ag_sim,test_ag_sim ag_sim,fd_choreo fd_ballet fd_util)
 $(call run-unit-test,test_ag_votor_base)
 $(call run-unit-test,test_ag_bls)
 $(call run-unit-test,test_ag_vote)
@@ -24,6 +25,7 @@ $(call run-unit-test,test_ag_slot_state)
 $(call run-unit-test,test_ag_finality_tracker)
 $(call run-unit-test,test_ag_parent_ready_tracker)
 $(call run-unit-test,test_ag_votor)
+$(call run-unit-test,test_ag_sim)
 endif
 
 else
