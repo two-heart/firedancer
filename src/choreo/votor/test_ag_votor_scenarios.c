@@ -204,10 +204,10 @@ label_parse( fd_jtok_t * j ) {
   if( !strcmp( s, "0" ) ) return (label_t){ 0 };
   label_t      label = { 0 };
   char const * c     = s;
-  if( FD_UNLIKELY( *c<'1' || *c>'9' ) ) FD_LOG_ERR(( "bad label \"%s\"", s ));
-  for( ; *c>='0' && *c<='9'; c++ ) label.slot = label.slot*10UL + (ulong)( *c-'0' );
-  if( FD_UNLIKELY( *c<'a' || *c>'z' ) ) FD_LOG_ERR(( "bad label \"%s\"", s ));
-  for( ; *c>='a' && *c<='z'; c++ ) label.index = label.index*26UL + (ulong)( *c-'a' ) + 1UL;
+  if( FD_UNLIKELY( (*c<'1') | (*c>'9') ) ) FD_LOG_ERR(( "bad label \"%s\"", s ));
+  for( ; (*c>='0') & (*c<='9'); c++ ) label.slot = label.slot*10UL + (ulong)( *c-'0' );
+  if( FD_UNLIKELY( (*c<'a') | (*c>'z') ) ) FD_LOG_ERR(( "bad label \"%s\"", s ));
+  for( ; (*c>='a') & (*c<='z'); c++ ) label.index = label.index*26UL + (ulong)( *c-'a' ) + 1UL;
   if( FD_UNLIKELY( *c ) ) FD_LOG_ERR(( "bad label \"%s\"", s ));
   label.index--;
   return label;
@@ -224,7 +224,7 @@ action_kind_parse( fd_jtok_str_t const * s ) {
 static node_t *
 node_find( scenario_t const * s,
            label_t            label ) {
-  if( label.slot>=s->slot_cnt || label.index>=s->width ) return NULL;
+  if( (label.slot>=s->slot_cnt) | (label.index>=s->width) ) return NULL;
   node_t * n = &s->nodes[ label.slot*s->width+label.index ];
   return n->kinds ? n : NULL;
 }
@@ -272,8 +272,8 @@ actions_parse( scenario_t * s,
       }
     }
     if( FD_UNLIKELY( fd_jtok_err( j ) ) ) FD_LOG_ERR(( "malformed action %lu", s->action_cnt-1UL ));
-    int ok = a->kind==CLOCK ? !has_node && a->ms!=ULONG_MAX
-                            : a->kind!=UINT_MAX && has_node && has_parent && a->label.slot && a->parent.slot<a->label.slot;
+    int ok = a->kind==CLOCK ? (!has_node) & (a->ms!=ULONG_MAX)
+                            : (a->kind!=UINT_MAX) & has_node & has_parent & (!!a->label.slot) & (a->parent.slot<a->label.slot);
     if( FD_UNLIKELY( !ok ) ) FD_LOG_ERR(( "bad action %lu", s->action_cnt-1UL ));
   }
   if( FD_UNLIKELY( fd_jtok_fini( j ) ) ) FD_LOG_ERR(( "malformed JSON" ));
@@ -307,8 +307,8 @@ nodes_build( scenario_t * s ) {
 static void
 canonical_build( scenario_t * s ) {
   node_t const * n = NULL;
-  for( ulong slot=s->slot_cnt-1UL; slot && !n; slot-- ) {
-    for( ulong index=0UL; index<s->width && !n; index++ ) {
+  for( ulong slot=s->slot_cnt-1UL; (!!slot) & (!n); slot-- ) {
+    for( ulong index=0UL; (index<s->width) & (!n); index++ ) {
       node_t const * c = node_find( s, (label_t){ .slot = slot, .index = index } );
       if( c && !( c->kinds & (1U<<SKIP_CERT) ) ) n = c;
     }
@@ -316,10 +316,10 @@ canonical_build( scenario_t * s ) {
 
   for( ; n; n = n->parent.slot ? node_find( s, n->parent ) : NULL ) {
     uint k      = n->kinds;
-    int  direct = ( ( k & (1U<<NOTARIZE_CERT) ) && ( k & (1U<<FINALIZE_CERT) ) ) || ( k & (1U<<FAST_FINALIZE_CERT) );
+    int  direct = ( (!!( k & (1U<<NOTARIZE_CERT) )) & (!!( k & (1U<<FINALIZE_CERT) )) ) | (!!( k & (1U<<FAST_FINALIZE_CERT) ));
     s->slots[ n->label.slot ].canonical       = CANONICAL_BLOCK;
     s->slots[ n->label.slot ].canonical_block = block_id( n->label );
-    if( !s->canonical_final && direct ) s->canonical_final = n->label.slot;
+    if( (!s->canonical_final) & direct ) s->canonical_final = n->label.slot;
     for( ulong slot=n->parent.slot+1UL; slot<n->label.slot; slot++ ) s->slots[ slot ].canonical = CANONICAL_SKIP;
     if( FD_UNLIKELY( n->parent.slot && !node_find( s, n->parent ) ) ) FD_LOG_ERR(( "canonical block in slot %lu cites a parent with no actions", n->label.slot ));
   }
@@ -390,7 +390,7 @@ check_vote( scenario_t *            s,
     if( FD_UNLIKELY( st->voted_skip  ) ) FD_LOG_CRIT(( "INVARIANT: voted notar and skip in slot %lu", slot ));
     if( FD_UNLIKELY( st->voted_notar ) ) FD_LOG_CRIT(( "INVARIANT: voted notar twice in slot %lu", slot ));
     node_t const * n = node_of_block( s, slot, vote->notar.block_hash );
-    if( FD_UNLIKELY( !n || !n->replayed || n->dead ) ) FD_LOG_CRIT(( "INVARIANT: voted notar in slot %lu for a block replay did not complete or found dead", slot ));
+    if( FD_UNLIKELY( !n || ( (!n->replayed) | (!!n->dead) ) ) ) FD_LOG_CRIT(( "INVARIANT: voted notar in slot %lu for a block replay did not complete or found dead", slot ));
     st->voted_notar = 1;
     memcpy( st->voted_notar_hash, vote->notar.block_hash, sizeof(ag_block_hash_t) );
     break;
@@ -401,7 +401,7 @@ check_vote( scenario_t *            s,
     st->voted_skip = 1;
     break;
   case AG_VOTE_KIND_FINAL:
-    if( FD_UNLIKELY( st->canonical!=CANONICAL_BLOCK || !st->voted_notar ||
+    if( FD_UNLIKELY( ( (st->canonical!=CANONICAL_BLOCK) | (!st->voted_notar) ) ||
                     memcmp( st->voted_notar_hash, st->canonical_block.hash, sizeof(ag_block_hash_t) ) ) ) {
       FD_LOG_CRIT(( "INVARIANT: voted final in slot %lu without voting notar for its canonical block", slot ));
     }
@@ -447,7 +447,7 @@ check_finality( scenario_t const * s,
       int                     final      = state && state->certs.finalize.slot!=ULONG_MAX;
       int                     notar      = state && state->certs.notar.slot!=ULONG_MAX         && !memcmp( state->certs.notar.block_hash,         hash, sizeof(ag_block_hash_t) );
       int                     fast_final = state && state->certs.fast_finalize.slot!=ULONG_MAX && !memcmp( state->certs.fast_finalize.block_hash, hash, sizeof(ag_block_hash_t) );
-      if( FD_UNLIKELY( !( final && notar ) && !fast_final ) ) FD_LOG_CRIT(( "INVARIANT: finalized slot %lu without a final and notar cert or a fast final cert", slot ));
+      if( FD_UNLIKELY( (!( final & notar )) & (!fast_final) ) ) FD_LOG_CRIT(( "INVARIANT: finalized slot %lu without a final and notar cert or a fast final cert", slot ));
       break;
     }
     case AG_FINALIZATION_STATUS_IMPLICITLY_FINALIZED: {
@@ -494,10 +494,10 @@ check_dead( scenario_t const * s,
             ulong              slot,
             ulong              final_cert_slot,
             int                retired ) {
-  if( slot<=final_cert_slot || retired ) return;
+  if( (slot<=final_cert_slot) | (!!retired) ) return;
   ulong start = ag_first_slot_in_window( slot );
   for( ulong w=start; w<start+AG_SLOTS_PER_WINDOW; w++ ) {
-    if( FD_UNLIKELY( !s->slots[ w ].voted_notar && !s->slots[ w ].voted_skip ) ) FD_LOG_CRIT(( "INVARIANT: replay found a block in slot %lu dead, but slot %lu of its window has no vote", slot, w ));
+    if( FD_UNLIKELY( (!s->slots[ w ].voted_notar) & (!s->slots[ w ].voted_skip) ) ) FD_LOG_CRIT(( "INVARIANT: replay found a block in slot %lu dead, but slot %lu of its window has no vote", slot, w ));
   }
 }
 
@@ -515,7 +515,7 @@ pump( scenario_t * s,
     ag_event_pool_t pool_event;
     if( ag_pool_poll_pool_event( pool, &pool_event ) ) {
       if( pool_event.kind==AG_EVENT_POOL_CERT_CREATED &&
-          ( pool_event.cert_created.kind==AG_CERT_KIND_FINAL || pool_event.cert_created.kind==AG_CERT_KIND_FAST_FINAL ) ) {
+          ( (pool_event.cert_created.kind==AG_CERT_KIND_FINAL) | (pool_event.cert_created.kind==AG_CERT_KIND_FAST_FINAL) ) ) {
         s->final_cert_slot = fd_ulong_max( s->final_cert_slot, ag_cert_slot( &pool_event.cert_created ) );
       }
       ag_votor_handle_pool_event( votor, &pool_event, now );
@@ -569,12 +569,12 @@ scenario_run( scenario_t * s ) {
     pool_mem     = aligned_alloc( ag_pool_align(),  fd_ulong_align_up( ag_pool_footprint ( slot_max ), ag_pool_align()  ) );
     votor_mem    = aligned_alloc( ag_votor_align(), fd_ulong_align_up( ag_votor_footprint( slot_max ), ag_votor_align() ) );
     mem_slot_max = slot_max;
-    FD_TEST( pool_mem && votor_mem );
+    FD_TEST( (!!pool_mem) & (!!votor_mem) );
   }
 
   ag_pool_t *  pool  = ag_pool_join ( ag_pool_new ( pool_mem,  slot_max, 42UL ) );
   ag_votor_t * votor = ag_votor_join( ag_votor_new( votor_mem, slot_max, 42UL ) );
-  FD_TEST( pool && votor );
+  FD_TEST( (!!pool) & (!!votor) );
   ag_pool_init          ( pool, 0UL );
   ag_pool_advance_epoch ( pool, &epoch_info, 0UL, 0UL );
   ag_votor_init         ( votor, 0UL, 0L, NS_PER_SLOT, SHRED_VERSION, fake_sign_fn, NULL );
@@ -701,7 +701,7 @@ main( int     argc,
 
   ulong * current = mmap( NULL, jobs*sizeof(ulong), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0 );
   pid_t * pids    = malloc( jobs*sizeof(pid_t) );
-  FD_TEST( current!=MAP_FAILED && pids );
+  FD_TEST( (current!=MAP_FAILED) & (!!pids) );
   for( ulong w=0UL; w<jobs; w++ ) {
     pids[w] = fork();
     FD_TEST( pids[w]>=0 );
@@ -709,12 +709,12 @@ main( int     argc,
   }
 
   int failed = 0;
-  for( ulong left=jobs; left && !failed; left-- ) {
+  for( ulong left=jobs; (!!left) & (!failed); left-- ) {
     int   status;
     pid_t pid = wait( &status );
     FD_TEST( pid>0 );
     failed = !WIFEXITED( status ) || WEXITSTATUS( status );
-    for( ulong w=0UL; failed && w<jobs; w++ ) {
+    for( ulong w=0UL; (!!failed) & (w<jobs); w++ ) {
       if( pids[w]!=pid ) { kill( pids[w], SIGKILL ); continue; }
       ulong   size;
       uchar * data = file_read( g.gl_pathv[ current[w] ], &size );
