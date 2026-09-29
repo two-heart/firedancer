@@ -2,9 +2,6 @@
 
 #include "ag_vote_serde.h" /* ag_vote_signing_ser */
 
-#ifndef FD_AG_NO_CERT_VERIFY
-#define FD_AG_NO_CERT_VERIFY 0 /* EXTRAS=no-cert-verify skips signature checks */
-#endif
 
 static int
 is_signer( ag_cert_t const * self,
