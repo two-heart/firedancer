@@ -204,11 +204,11 @@ label_parse( fd_jtok_t * j ) {
   if( !strcmp( s, "0" ) ) return (label_t){ 0 };
   label_t      label = { 0 };
   char const * c     = s;
-  if( *c<'1' || *c>'9' ) FD_LOG_ERR(( "bad label \"%s\"", s ));
+  if( FD_UNLIKELY( *c<'1' || *c>'9' ) ) FD_LOG_ERR(( "bad label \"%s\"", s ));
   for( ; *c>='0' && *c<='9'; c++ ) label.slot = label.slot*10UL + (ulong)( *c-'0' );
-  if( *c<'a' || *c>'z' ) FD_LOG_ERR(( "bad label \"%s\"", s ));
+  if( FD_UNLIKELY( *c<'a' || *c>'z' ) ) FD_LOG_ERR(( "bad label \"%s\"", s ));
   for( ; *c>='a' && *c<='z'; c++ ) label.index = label.index*26UL + (ulong)( *c-'a' ) + 1UL;
-  if( *c ) FD_LOG_ERR(( "bad label \"%s\"", s ));
+  if( FD_UNLIKELY( *c ) ) FD_LOG_ERR(( "bad label \"%s\"", s ));
   label.index--;
   return label;
 }
@@ -251,7 +251,7 @@ actions_parse( scenario_t * s,
   fd_jtok_init( j, data, size );
   fd_jtok_arr_enter( j );
   while( fd_jtok_arr_next( j ) ) {
-    if( s->action_cnt==action_max ) {
+    if( FD_UNLIKELY( s->action_cnt==action_max ) ) {
       action_max = fd_ulong_max( 64UL, 2UL*action_max );
       s->actions = realloc( s->actions, action_max*sizeof(action_t) );
       FD_TEST( s->actions );
@@ -271,12 +271,12 @@ actions_parse( scenario_t * s,
         a->kind = action_kind_parse( &kind );
       }
     }
-    if( fd_jtok_err( j ) ) FD_LOG_ERR(( "malformed action %lu", s->action_cnt-1UL ));
+    if( FD_UNLIKELY( fd_jtok_err( j ) ) ) FD_LOG_ERR(( "malformed action %lu", s->action_cnt-1UL ));
     int ok = a->kind==CLOCK ? !has_node && a->ms!=ULONG_MAX
                             : a->kind!=UINT_MAX && has_node && has_parent && a->label.slot && a->parent.slot<a->label.slot;
-    if( !ok ) FD_LOG_ERR(( "bad action %lu", s->action_cnt-1UL ));
+    if( FD_UNLIKELY( !ok ) ) FD_LOG_ERR(( "bad action %lu", s->action_cnt-1UL ));
   }
-  if( fd_jtok_fini( j ) ) FD_LOG_ERR(( "malformed JSON" ));
+  if( FD_UNLIKELY( fd_jtok_fini( j ) ) ) FD_LOG_ERR(( "malformed JSON" ));
 }
 
 /* Lays nodes out by slot then index, merging what each node's actions say. */
@@ -321,7 +321,7 @@ canonical_build( scenario_t * s ) {
     s->slots[ n->label.slot ].canonical_block = block_id( n->label );
     if( !s->canonical_final && direct ) s->canonical_final = n->label.slot;
     for( ulong slot=n->parent.slot+1UL; slot<n->label.slot; slot++ ) s->slots[ slot ].canonical = CANONICAL_SKIP;
-    if( n->parent.slot && !node_find( s, n->parent ) ) FD_LOG_ERR(( "canonical block in slot %lu cites a parent with no actions", n->label.slot ));
+    if( FD_UNLIKELY( n->parent.slot && !node_find( s, n->parent ) ) ) FD_LOG_ERR(( "canonical block in slot %lu cites a parent with no actions", n->label.slot ));
   }
   s->slots[ 0 ].canonical = CANONICAL_BLOCK;
 }
@@ -330,10 +330,10 @@ static uchar *
 file_read( char const * path,
            ulong *      size ) {
   FILE * f = fopen( path, "rb" );
-  if( !f ) FD_LOG_ERR(( "fopen(%s) failed", path ));
+  if( FD_UNLIKELY( !f ) ) FD_LOG_ERR(( "fopen(%s) failed", path ));
   struct stat st;
   FD_TEST( !fstat( fileno( f ), &st ) );
-  if( !S_ISREG( st.st_mode ) ) FD_LOG_ERR(( "%s is not a regular file", path ));
+  if( FD_UNLIKELY( !S_ISREG( st.st_mode ) ) ) FD_LOG_ERR(( "%s is not a regular file", path ));
   FD_TEST( !fseek( f, 0L, SEEK_END ) );
   long sz = ftell( f );
   FD_TEST( sz>=0L && !fseek( f, 0L, SEEK_SET ) );
@@ -387,22 +387,22 @@ check_vote( scenario_t *            s,
   slot_t * st = &s->slots[ slot ];
   switch( vote->kind ) {
   case AG_VOTE_KIND_NOTAR: {
-    if( st->voted_skip  ) FD_LOG_CRIT(( "INVARIANT: voted notar and skip in slot %lu", slot ));
-    if( st->voted_notar ) FD_LOG_CRIT(( "INVARIANT: voted notar twice in slot %lu", slot ));
+    if( FD_UNLIKELY( st->voted_skip  ) ) FD_LOG_CRIT(( "INVARIANT: voted notar and skip in slot %lu", slot ));
+    if( FD_UNLIKELY( st->voted_notar ) ) FD_LOG_CRIT(( "INVARIANT: voted notar twice in slot %lu", slot ));
     node_t const * n = node_of_block( s, slot, vote->notar.block_hash );
-    if( !n || !n->replayed || n->dead ) FD_LOG_CRIT(( "INVARIANT: voted notar in slot %lu for a block replay did not complete or found dead", slot ));
+    if( FD_UNLIKELY( !n || !n->replayed || n->dead ) ) FD_LOG_CRIT(( "INVARIANT: voted notar in slot %lu for a block replay did not complete or found dead", slot ));
     st->voted_notar = 1;
     memcpy( st->voted_notar_hash, vote->notar.block_hash, sizeof(ag_block_hash_t) );
     break;
   }
   case AG_VOTE_KIND_SKIP:
-    if( st->voted_notar ) FD_LOG_CRIT(( "INVARIANT: voted notar and skip in slot %lu", slot ));
-    if( st->voted_skip  ) FD_LOG_CRIT(( "INVARIANT: voted skip twice in slot %lu", slot ));
+    if( FD_UNLIKELY( st->voted_notar ) ) FD_LOG_CRIT(( "INVARIANT: voted notar and skip in slot %lu", slot ));
+    if( FD_UNLIKELY( st->voted_skip  ) ) FD_LOG_CRIT(( "INVARIANT: voted skip twice in slot %lu", slot ));
     st->voted_skip = 1;
     break;
   case AG_VOTE_KIND_FINAL:
-    if( st->canonical!=CANONICAL_BLOCK || !st->voted_notar ||
-        memcmp( st->voted_notar_hash, st->canonical_block.hash, sizeof(ag_block_hash_t) ) ) {
+    if( FD_UNLIKELY( st->canonical!=CANONICAL_BLOCK || !st->voted_notar ||
+                    memcmp( st->voted_notar_hash, st->canonical_block.hash, sizeof(ag_block_hash_t) ) ) ) {
       FD_LOG_CRIT(( "INVARIANT: voted final in slot %lu without voting notar for its canonical block", slot ));
     }
     st->voted_final = 1;
@@ -447,12 +447,12 @@ check_finality( scenario_t const * s,
       int                     final      = state && state->certs.finalize.slot!=ULONG_MAX;
       int                     notar      = state && state->certs.notar.slot!=ULONG_MAX         && !memcmp( state->certs.notar.block_hash,         hash, sizeof(ag_block_hash_t) );
       int                     fast_final = state && state->certs.fast_finalize.slot!=ULONG_MAX && !memcmp( state->certs.fast_finalize.block_hash, hash, sizeof(ag_block_hash_t) );
-      if( !( final && notar ) && !fast_final ) FD_LOG_CRIT(( "INVARIANT: finalized slot %lu without a final and notar cert or a fast final cert", slot ));
+      if( FD_UNLIKELY( !( final && notar ) && !fast_final ) ) FD_LOG_CRIT(( "INVARIANT: finalized slot %lu without a final and notar cert or a fast final cert", slot ));
       break;
     }
     case AG_FINALIZATION_STATUS_IMPLICITLY_FINALIZED: {
       ag_block_id_t block = ag_block_id( slot, hash );
-      if( !finalized_descendant( s, tracker, &block ) ) FD_LOG_CRIT(( "INVARIANT: implicitly finalized slot %lu without a finalized descendant linked to it", slot ));
+      if( FD_UNLIKELY( !finalized_descendant( s, tracker, &block ) ) ) FD_LOG_CRIT(( "INVARIANT: implicitly finalized slot %lu without a finalized descendant linked to it", slot ));
       break;
     }
     default:
@@ -473,12 +473,12 @@ check_canonical( scenario_t const * s,
     switch( ag_finality_tracker_status( tracker, slot, hash ) ) {
     case AG_FINALIZATION_STATUS_FINALIZED:
     case AG_FINALIZATION_STATUS_IMPLICITLY_FINALIZED:
-      if( kind!=CANONICAL_BLOCK || memcmp( hash, s->slots[ slot ].canonical_block.hash, sizeof(ag_block_hash_t) ) ) {
+      if( FD_UNLIKELY( kind!=CANONICAL_BLOCK || memcmp( hash, s->slots[ slot ].canonical_block.hash, sizeof(ag_block_hash_t) ) ) ) {
         FD_LOG_CRIT(( "INVARIANT: finalized a block off the canonical chain in slot %lu", slot ));
       }
       break;
     case AG_FINALIZATION_STATUS_IMPLICITLY_SKIPPED:
-      if( kind!=CANONICAL_SKIP ) FD_LOG_CRIT(( "INVARIANT: skipped slot %lu, which the canonical chain does not skip", slot ));
+      if( FD_UNLIKELY( kind!=CANONICAL_SKIP ) ) FD_LOG_CRIT(( "INVARIANT: skipped slot %lu, which the canonical chain does not skip", slot ));
       break;
     default:
       break;
@@ -497,7 +497,7 @@ check_dead( scenario_t const * s,
   if( slot<=final_cert_slot || retired ) return;
   ulong start = ag_first_slot_in_window( slot );
   for( ulong w=start; w<start+AG_SLOTS_PER_WINDOW; w++ ) {
-    if( !s->slots[ w ].voted_notar && !s->slots[ w ].voted_skip ) FD_LOG_CRIT(( "INVARIANT: replay found a block in slot %lu dead, but slot %lu of its window has no vote", slot, w ));
+    if( FD_UNLIKELY( !s->slots[ w ].voted_notar && !s->slots[ w ].voted_skip ) ) FD_LOG_CRIT(( "INVARIANT: replay found a block in slot %lu dead, but slot %lu of its window has no vote", slot, w ));
   }
 }
 
@@ -563,7 +563,7 @@ scenario_run( scenario_t * s ) {
   /* The pool holds slots up to slot_max-AG_REWARD_SLOT_DELTA past the
      root, and its event queues hold slot_max events. */
   ulong slot_max = fd_ulong_max( s->vote_slot_cnt+AG_REWARD_SLOT_DELTA, s->node_cnt+2UL );
-  if( slot_max>mem_slot_max ) {
+  if( FD_UNLIKELY( slot_max>mem_slot_max ) ) {
     free( pool_mem  );
     free( votor_mem );
     pool_mem     = aligned_alloc( ag_pool_align(),  fd_ulong_align_up( ag_pool_footprint ( slot_max ), ag_pool_align()  ) );
@@ -630,8 +630,8 @@ scenario_run( scenario_t * s ) {
 
   ulong         finalized_slot = ag_pool_finalized_slot( pool );
   uchar const * finalized_hash = ag_pool_finalized_block_hash( pool );
-  if( finalized_slot!=s->canonical_final ||
-      ( finalized_slot && ( !finalized_hash || memcmp( finalized_hash, s->slots[ finalized_slot ].canonical_block.hash, sizeof(ag_block_hash_t) ) ) ) ) {
+  if( FD_UNLIKELY( finalized_slot!=s->canonical_final ||
+                  ( finalized_slot && ( !finalized_hash || memcmp( finalized_hash, s->slots[ finalized_slot ].canonical_block.hash, sizeof(ag_block_hash_t) ) ) ) ) ) {
     FD_LOG_CRIT(( "INVARIANT: finalized slot %lu, not canonical slot %lu", finalized_slot, s->canonical_final ));
   }
 
@@ -692,9 +692,9 @@ main( int     argc,
       FD_TEST( fd_cstr_printf_check( pattern, sizeof(pattern), NULL, "%s/*", arg ) );
       arg = pattern;
     }
-    if( glob( arg, i ? GLOB_APPEND : 0, NULL, &g ) ) FD_LOG_ERR(( "no input matches %s", arg ));
+    if( FD_UNLIKELY( glob( arg, i ? GLOB_APPEND : 0, NULL, &g ) ) ) FD_LOG_ERR(( "no input matches %s", arg ));
   }
-  if( !g.gl_pathc ) FD_LOG_ERR(( "usage: %s [--jobs N] [<file|dir|pattern>...]", argv[0] ));
+  if( FD_UNLIKELY( !g.gl_pathc ) ) FD_LOG_ERR(( "usage: %s [--jobs N] [<file|dir|pattern>...]", argv[0] ));
   jobs = fd_ulong_max( fd_ulong_min( jobs, g.gl_pathc ), 1UL );
 
   cluster_init();
@@ -723,7 +723,7 @@ main( int     argc,
     }
   }
 
-  if( !failed ) FD_LOG_NOTICE(( "pass: %lu scenarios", g.gl_pathc ));
+  if( FD_LIKELY( !failed ) ) FD_LOG_NOTICE(( "pass: %lu scenarios", g.gl_pathc ));
   free( pids );
   globfree( &g );
   fd_halt();
