@@ -131,7 +131,7 @@ check_sig( ag_cert_t const *       self,
 int
 ag_cert_verify( ag_cert_t const *       self,
                 ag_epoch_info_t const * epoch_info ) {
-  return check_threshold( self, epoch_info ) && ( FD_AG_NO_CERT_VERIFY || check_sig( self, epoch_info ) );
+  return check_threshold( self, epoch_info ) && check_sig( self, epoch_info );
 }
 
 char *

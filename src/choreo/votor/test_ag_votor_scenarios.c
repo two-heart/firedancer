@@ -1,10 +1,11 @@
 /* test_ag_votor_scenarios drives a votor wired to a pool, as the votor
    tile does, through scenarios and checks its invariants.
 
-     test_ag_votor_scenarios [--jobs N] <file|pattern>...
+     test_ag_votor_scenarios [--jobs N] [<file|dir|pattern>...]
 
-   Quoted patterns are expanded with glob, which avoids the shell's
-   argument limit on large corpora.
+   With no inputs, runs the JSON files in src/choreo/votor/scenarios
+   from the repository root.  Quoted patterns are expanded with glob, avoiding
+   the OS argument-size limit when launching with large corpora.
 
    A scenario is a JSON list of actions on a block tree:
 
@@ -20,8 +21,8 @@
    suite: its worker logs the backtrace, then the suite prints the
    failing input and exits nonzero.
 
-   Requires EXTRAS=no-cert-verify: every validator signs with one fake
-   signature, so certificates only verify with the signature check off. */
+   Every validator signs with one fake signature.  This test's pool
+   checks certificate stake thresholds but skips signature verification. */
 
 #include <execinfo.h>
 #include <glob.h>
@@ -33,7 +34,18 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "ag_cert.c" /* reuses the production stake threshold check */
+
+static int
+test_cert_verify( ag_cert_t const *       cert,
+                  ag_epoch_info_t const * epoch_info ) {
+  return check_threshold( cert, epoch_info );
+}
+
+/* Override verification only in the pool compiled into this test. */
+#define ag_cert_verify test_cert_verify
 #include "ag_pool.c" /* reads the pool's finality tracker */
+#undef ag_cert_verify
 #include "ag_votor.h"
 #include "test_ag_cert_builder.h"
 #include "../../ballet/json/fd_jtok.h"
@@ -664,19 +676,25 @@ main( int     argc,
   fd_boot( &argc, &argv );
   ulong jobs = fd_env_strip_cmdline_ulong( &argc, &argv, "--jobs", NULL, (ulong)sysconf( _SC_NPROCESSORS_ONLN ) );
 
+  /* The unit-test runner supplies workspace options; this test uses malloc. */
+  fd_env_strip_cmdline_cstr( &argc, &argv, "--page-sz",  NULL, NULL );
+  fd_env_strip_cmdline_cstr( &argc, &argv, "--page-cnt", NULL, NULL );
+  fd_env_strip_cmdline_cstr( &argc, &argv, "--numa-idx", NULL, NULL );
+
   glob_t g = { 0 };
-  for( int i=1; i<argc; i++ ) {
+  int input_cnt = argc>1 ? argc-1 : 1;
+  for( int i=0; i<input_cnt; i++ ) {
     /* A directory runs every entry in it */
     char         pattern[ PATH_MAX ];
-    char const * arg = argv[i];
+    char const * arg = argc>1 ? argv[i+1] : "src/choreo/votor/scenarios/*.json";
     struct stat  st;
     if( !stat( arg, &st ) && S_ISDIR( st.st_mode ) ) {
       FD_TEST( fd_cstr_printf_check( pattern, sizeof(pattern), NULL, "%s/*", arg ) );
       arg = pattern;
     }
-    if( glob( arg, i>1 ? GLOB_APPEND : 0, NULL, &g ) ) FD_LOG_ERR(( "no input matches %s", arg ));
+    if( glob( arg, i ? GLOB_APPEND : 0, NULL, &g ) ) FD_LOG_ERR(( "no input matches %s", arg ));
   }
-  if( !g.gl_pathc ) FD_LOG_ERR(( "usage: %s [--jobs N] <file|dir|pattern>...", argv[0] ));
+  if( !g.gl_pathc ) FD_LOG_ERR(( "usage: %s [--jobs N] [<file|dir|pattern>...]", argv[0] ));
   jobs = fd_ulong_max( fd_ulong_min( jobs, g.gl_pathc ), 1UL );
 
   cluster_init();
