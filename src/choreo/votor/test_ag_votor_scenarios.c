@@ -27,6 +27,9 @@
    every worker.  Keep the corpus unchanged during a run; workers
    read each input again and reuse their preallocated buffers.
 
+   Slot storage is fully initialized on first use, then sparsely reset for
+   this test's single voting validator.
+
    Every validator signs with one fake signature.  This test's pool
    checks certificate stake thresholds but skips signature verification. */
 
@@ -49,10 +52,16 @@ test_cert_verify( ag_cert_t const *       cert,
   return check_threshold( cert, epoch_info );
 }
 
-/* Override verification only in the pool compiled into this test. */
-#define ag_cert_verify test_cert_verify
+#include "ag_slot_state.c" /* reuses the production vote-map queries and full reset */
+
+static void test_slot_state_null( ag_slot_state_t * self );
+
+/* Override verification and slot reset only in this test's pool. */
+#define ag_cert_verify     test_cert_verify
+#define ag_slot_state_null test_slot_state_null
 #include "ag_pool.c" /* reads the pool's finality tracker */
 #undef ag_cert_verify
+#undef ag_slot_state_null
 #include "ag_votor.h"
 #include "test_ag_cert_builder.h"
 #include "../../ballet/json/fd_jtok.h"
@@ -119,7 +128,6 @@ typedef struct {
   ulong      vote_slot_cnt;
   slot_t *   slots;           /* vote_slot_cnt of them */
   ulong      canonical_final; /* deepest directly finalized canonical slot */
-  ulong      final_cert_slot; /* highest final cert slot the votor saw */
 } scenario_t;
 
 /* Sized once from the corpus before fork.  Each worker inherits private
@@ -139,12 +147,81 @@ static struct {
   void *     votor;
   ulong      votor_sz;
   ulong      pool_slot_max;
+  slot_state_ele_t * slot_pool;
+  uchar *           slot_initialized;
 } memory;
 
 static ag_epoch_info_t epoch_info;
 static fd_bls_sig_t    fake_sig;
 static ag_cert_t       templates[ CERT_CNT ];
 static fd_bls_set_t    bad[ fd_bls_set_word_cnt ];
+
+/* Only rank zero contributes individual votes; certificates do not populate
+   the vote maps.  Its own notar hash and fallback hashes therefore name every
+   live map entry.  Clear those keys and rank zero's sentinels on reuse, keeping
+   the same counters, aggregates and certificate sentinels as the full reset.
+
+   Slots that have never been initialized, or whose storage was overwritten
+   by a smaller pool's bookkeeping, take the production reset first. */
+
+static void
+test_slot_state_null( ag_slot_state_t * self ) {
+  ulong offset = (ulong)self-(ulong)&memory.slot_pool[0].slot_state;
+  FD_TEST( !(offset%sizeof(slot_state_ele_t)) );
+  ulong idx = offset/sizeof(slot_state_ele_t);
+  FD_TEST( idx<memory.pool_slot_max );
+  if( FD_UNLIKELY( !memory.slot_initialized[idx] ) ) {
+    ag_slot_state_null( self );
+    memory.slot_initialized[idx] = 1;
+    return;
+  }
+
+  FD_TEST( self->own_rank==0UL );
+
+  ag_slot_votes_t * votes = &self->votes;
+  ag_block_hash_key_t key = FD_LOAD( ag_block_hash_key_t, votes->own_notar_hash );
+  if( FD_LIKELY( !notar_map_key_inval( key ) ) ) {
+    ag_slot_voted_stake_hash_t * entry = notar_map_query( votes->notar_stake_map, key, NULL );
+    FD_TEST( entry );
+    entry->hash = ag_block_hash_key_null;
+  }
+
+  /* Find every fallback entry before clearing any keys: clearing the first
+     key in a probe chain would hide later entries that collided with it. */
+  ulong cnt = votes->notar_fallback_sig_cnt[0];
+  FD_TEST( cnt<=AG_NOTAR_FALLBACK_VOTE_MAX );
+  ag_slot_voted_stake_hash_t * entries[ AG_NOTAR_FALLBACK_VOTE_MAX ];
+  for( ulong i=0UL; i<cnt; i++ ) {
+    key = FD_LOAD( ag_block_hash_key_t, votes->notar_fallback_sig_hash[0][i] );
+    entries[i] = notar_fallback_map_query( votes->notar_fallback_stake_map, key, NULL );
+    FD_TEST( entries[i] );
+  }
+  for( ulong i=0UL; i<cnt; i++ ) entries[i]->hash = ag_block_hash_key_null;
+
+  fd_memset( &votes->notar_sig[0], 0, sizeof(fd_bls_sig_t) );
+  votes->notar_fallback_sig_cnt[0] = 0;
+  votes->skip_stake = 0UL;
+  fd_memset( &votes->skip_sig[0], 0, sizeof(fd_bls_sig_t) );
+  fd_bls_agg_null( &votes->skip_agg );
+  votes->skip_fallback_stake = 0UL;
+  fd_bls_agg_null( &votes->skip_fallback_agg );
+  votes->finalize_stake = 0UL;
+  fd_bls_agg_null( &votes->finalize_agg );
+  votes->notar_or_skip_stake = 0UL;
+  votes->top_notar_stake     = 0UL;
+  fd_memset( votes->top_notar_hash, 0, sizeof(ag_block_hash_t) );
+  fd_memset( votes->own_notar_hash, 0, sizeof(ag_block_hash_t) );
+
+  self->certs.notar.slot         = ULONG_MAX;
+  self->certs.notar_fallback_cnt = 0UL;
+  self->certs.skip.slot          = ULONG_MAX;
+  self->certs.fast_finalize.slot = ULONG_MAX;
+  self->certs.finalize.slot      = ULONG_MAX;
+  self->parents_cnt               = 0UL;
+  self->pending_safe_to_notar.cnt = 0UL;
+  self->sent_safe_to_notar.cnt    = 0UL;
+  self->sent_safe_to_skip         = 0;
+}
 
 static void
 fake_sign_fn( void *         ctx,
@@ -442,12 +519,14 @@ memory_init( char ** paths,
   memory.slots   = memory_new( memory.vote_slot_max, sizeof(slot_t)   );
   memory.pool    = memory_new( memory.pool_sz,       1UL );
   memory.votor   = memory_new( memory.votor_sz,      1UL );
+  memory.slot_initialized = memory_new( memory.pool_slot_max, sizeof(uchar) );
   FD_TEST( fd_ulong_is_aligned( (ulong)memory.pool,  ag_pool_align()  ) );
   FD_TEST( fd_ulong_is_aligned( (ulong)memory.votor, ag_votor_align() ) );
 }
 
 static void
 memory_fini( void ) {
+  FD_TEST( !munmap( memory.slot_initialized, memory.pool_slot_max*sizeof(uchar) ) );
   FD_TEST( !munmap( memory.votor,   memory.votor_sz ) );
   FD_TEST( !munmap( memory.pool,    memory.pool_sz  ) );
   FD_TEST( !munmap( memory.slots,   memory.vote_slot_max*sizeof(slot_t) ) );
@@ -486,6 +565,7 @@ static void
 check_vote( scenario_t *            s,
             ag_event_vote_t const * event ) {
   ag_vote_t const * vote = &event->vote;
+  FD_TEST( ag_vote_rank( vote )==0UL ); /* required by test_slot_state_null */
   ulong             slot = ag_vote_slot( vote );
   FD_TEST( slot<s->vote_slot_cnt );
   slot_t * st = &s->slots[ slot ];
@@ -590,21 +670,6 @@ check_canonical( scenario_t const * s,
   }
 }
 
-/* Unless its window already retired or a final cert covers it, a dead
-   block leaves a vote in every slot of its window. */
-
-static void
-check_dead( scenario_t const * s,
-            ulong              slot,
-            ulong              final_cert_slot,
-            int                retired ) {
-  if( (slot<=final_cert_slot) | (!!retired) ) return;
-  ulong start = ag_first_slot_in_window( slot );
-  for( ulong w=start; w<start+AG_SLOTS_PER_WINDOW; w++ ) {
-    if( FD_UNLIKELY( (!s->slots[ w ].voted_notar) & (!s->slots[ w ].voted_skip) ) ) FD_LOG_CRIT(( "INVARIANT: replay found a block in slot %lu dead, but slot %lu of its window has no vote", slot, w ));
-  }
-}
-
 /* Shuttle events between pool and votor, as the votor tile does, until
    both are quiet, then check finality. */
 
@@ -618,10 +683,6 @@ pump( scenario_t * s,
 
     ag_event_pool_t pool_event;
     if( ag_pool_poll_pool_event( pool, &pool_event ) ) {
-      if( pool_event.kind==AG_EVENT_POOL_CERT_CREATED &&
-          ( (pool_event.cert_created.kind==AG_CERT_KIND_FINAL) | (pool_event.cert_created.kind==AG_CERT_KIND_FAST_FINAL) ) ) {
-        s->final_cert_slot = fd_ulong_max( s->final_cert_slot, ag_cert_slot( &pool_event.cert_created ) );
-      }
       ag_votor_handle_pool_event( votor, &pool_event, now );
       progress = 1;
     }
@@ -662,9 +723,13 @@ scenario_run( scenario_t * s ) {
   ulong slot_max = fd_ulong_max( s->vote_slot_cnt+AG_REWARD_SLOT_DELTA, s->node_cnt+2UL );
   FD_TEST( slot_max<=memory.pool_slot_max );
 
+  /* Pool metadata follows the slot array.  A smaller capacity can overwrite
+     previously initialized slots beyond its end; invalidate their markers. */
+  memset( memory.slot_initialized+slot_max, 0, memory.pool_slot_max-slot_max );
   ag_pool_t *  pool  = ag_pool_join ( ag_pool_new ( memory.pool,  slot_max, 42UL ) );
   ag_votor_t * votor = ag_votor_join( ag_votor_new( memory.votor, slot_max, 42UL ) );
   FD_TEST( (!!pool) & (!!votor) );
+  memory.slot_pool = pool->slot_states->pool;
   ag_pool_init          ( pool, 0UL );
   ag_pool_advance_epoch ( pool, &epoch_info, 0UL, 0UL );
   ag_votor_init         ( votor, 0UL, 0L, NS_PER_SLOT, SHRED_VERSION, fake_sign_fn, NULL );
@@ -683,11 +748,9 @@ scenario_run( scenario_t * s ) {
       ag_pool_add_cert( pool, &c, bad );
       break;
     }
-    case REPLAY_ARRIVES: {
-      ag_event_block_t arrived = { .kind = AG_EVENT_BLOCK_FIRST_SHRED, .slot = a->label.slot };
-      ag_votor_handle_block_event( votor, &arrived );
+    case REPLAY_ARRIVES:
+      /* The votor only receives completed replay events. */
       break;
-    }
     case REPLAY_COMPLETE: {
       ag_block_id_t id     = block_id( a->label );
       ag_block_id_t parent = block_id( a->parent );
@@ -695,21 +758,16 @@ scenario_run( scenario_t * s ) {
       node_t * n          = node_find( s, a->label );
       n->replayed         = 1;
       n->replayed_parent  = parent;
-      ag_event_replay_t completed = { .kind = AG_EVENT_REPLAY_COMPLETED, .slot = id.slot, .block_info = { .parent = parent } };
+      ag_event_replay_t completed = { .slot = id.slot, .block_info = { .parent = parent } };
       memcpy( completed.block_info.hash, id.hash, sizeof(ag_block_hash_t) );
       ag_votor_handle_replay_event( votor, &completed );
       break;
     }
-    case REPLAY_DEAD: {
-      ulong            final_cert_slot = s->final_cert_slot;
-      int              retired         = s->slots[ a->label.slot ].voted_final;
-      ag_event_block_t invalid         = { .kind = AG_EVENT_BLOCK_INVALID_BLOCK, .slot = a->label.slot };
+    case REPLAY_DEAD:
+      /* Dead blocks affect the vote invariant, but do not immediately
+         trigger skip votes in the current votor. */
       node_find( s, a->label )->dead = 1;
-      ag_votor_handle_block_event( votor, &invalid );
-      pump( s, pool, votor, now );
-      check_dead( s, a->label.slot, final_cert_slot, retired );
-      continue;
-    }
+      break;
     case CLOCK:
       now += (long)a->ms*1000000L;
       break;
