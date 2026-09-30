@@ -23,9 +23,9 @@
    suite: its worker logs the backtrace, then the suite prints the
    failing input and exits nonzero.
 
-   Inputs are scanned once before fork to size reusable storage for
-   every worker.  Keep the corpus unchanged during a run; workers
-   read each input again and reuse their preallocated buffers.
+   Inputs are scanned once by N sizing processes to determine reusable
+   storage for every execution worker.  Keep the corpus unchanged during
+   a run; execution workers read each input again and reuse their buffers.
 
    Slot storage is fully initialized on first use, then sparsely reset for
    this test's single voting validator.
@@ -33,6 +33,7 @@
    Every validator signs with one fake signature.  This test's pool
    checks certificate stake thresholds but skips signature verification. */
 
+#include <errno.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <glob.h>
@@ -130,8 +131,8 @@ typedef struct {
   ulong      canonical_final; /* deepest directly finalized canonical slot */
 } scenario_t;
 
-/* Sized once from the corpus before fork.  Each worker inherits private
-   storage and reuses it for every scenario. */
+/* Sized once from the corpus before execution workers fork.  Each worker
+   inherits private storage and reuses it for every scenario. */
 
 static struct {
   uchar *    data;
@@ -477,14 +478,57 @@ memory_new( ulong cnt,
   return p;
 }
 
-/* Read inputs once to size every buffer.  The node count used to reserve
-   pool/votor storage is an upper bound; scenario_run still initializes
-   them with each scenario's actual capacity.  Mappings are demand-paged,
-   so workers only touch the portions used by their scenarios. */
+typedef void (*worker_fn_t)( char ** paths, ulong path_cnt, ulong first, ulong stride, ulong * current );
+
+static int workers_run( char ** paths, ulong path_cnt, ulong jobs, worker_fn_t worker_fn );
+
+typedef struct {
+  ulong action_max;
+  ulong node_max;
+  ulong vote_slot_max;
+  ulong pool_slot_max;
+} sizing_t;
+
+static sizing_t * sizing;
+
+/* Each process uses its own input buffer and writes its maxima once, into
+   its own shared result.  No synchronization is needed between scanners. */
 
 static void
+sizing_worker( char ** paths,
+               ulong   path_cnt,
+               ulong   first,
+               ulong   stride,
+               ulong * current ) {
+  sizing_t limits = {0};
+  for( ulong i=first; i<path_cnt; i+=stride ) {
+    *current = i;
+    ulong size;
+    uchar * data = file_read( paths[i], &size );
+    scenario_t s = { .slot_cnt = 1UL, .width = 1UL };
+    actions_parse( &s, data, size );
+    FD_TEST( s.slot_cnt<=ULONG_MAX/s.width );
+    ulong node_max = s.slot_cnt*s.width;
+    ulong node_cnt = fd_ulong_min( s.action_cnt, node_max );
+    FD_TEST( (s.vote_slot_cnt<=ULONG_MAX-AG_REWARD_SLOT_DELTA) & (node_cnt<=ULONG_MAX-2UL) );
+    ulong pool_slot_max = fd_ulong_max( s.vote_slot_cnt+AG_REWARD_SLOT_DELTA, node_cnt+2UL );
+    limits.action_max    = fd_ulong_max( limits.action_max,    s.action_cnt    );
+    limits.node_max      = fd_ulong_max( limits.node_max,      node_max        );
+    limits.vote_slot_max = fd_ulong_max( limits.vote_slot_max, s.vote_slot_cnt );
+    limits.pool_slot_max = fd_ulong_max( limits.pool_slot_max, pool_slot_max   );
+  }
+  sizing[first] = limits;
+}
+
+/* Read inputs in parallel to size every buffer, then allocate storage before
+   execution workers fork.  The pool/votor capacity is an upper bound;
+   scenario_run still initializes them with each scenario's actual capacity.
+   Mappings are demand-paged, so workers touch only what their inputs use. */
+
+static int
 memory_init( char ** paths,
-             ulong   path_cnt ) {
+             ulong   path_cnt,
+             ulong   jobs ) {
   memory.data_max = 1UL;
   for( ulong i=0UL; i<path_cnt; i++ ) {
     struct stat st;
@@ -495,20 +539,23 @@ memory_init( char ** paths,
   }
   memory.data = memory_new( memory.data_max, 1UL );
 
-  for( ulong i=0UL; i<path_cnt; i++ ) {
-    ulong size;
-    uchar * data = file_read( paths[i], &size );
-    scenario_t s = { .slot_cnt = 1UL, .width = 1UL };
-    actions_parse( &s, data, size );
-    FD_TEST( s.slot_cnt<=ULONG_MAX/s.width );
-    ulong node_max = s.slot_cnt*s.width;
-    ulong node_cnt = fd_ulong_min( s.action_cnt, node_max );
-    FD_TEST( (s.vote_slot_cnt<=ULONG_MAX-AG_REWARD_SLOT_DELTA) & (node_cnt<=ULONG_MAX-2UL) );
-    ulong pool_slot_max = fd_ulong_max( s.vote_slot_cnt+AG_REWARD_SLOT_DELTA, node_cnt+2UL );
-    memory.action_max    = fd_ulong_max( memory.action_max,    s.action_cnt    );
-    memory.node_max      = fd_ulong_max( memory.node_max,      node_max        );
-    memory.vote_slot_max = fd_ulong_max( memory.vote_slot_max, s.vote_slot_cnt );
-    memory.pool_slot_max = fd_ulong_max( memory.pool_slot_max, pool_slot_max   );
+  FD_TEST( jobs<=ULONG_MAX/sizeof(sizing_t) );
+  sizing = mmap( NULL, jobs*sizeof(sizing_t), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0 );
+  FD_TEST( sizing!=MAP_FAILED );
+  int failed = workers_run( paths, path_cnt, jobs, sizing_worker );
+  if( FD_LIKELY( !failed ) ) {
+    for( ulong w=0UL; w<jobs; w++ ) {
+      memory.action_max    = fd_ulong_max( memory.action_max,    sizing[w].action_max    );
+      memory.node_max      = fd_ulong_max( memory.node_max,      sizing[w].node_max      );
+      memory.vote_slot_max = fd_ulong_max( memory.vote_slot_max, sizing[w].vote_slot_max );
+      memory.pool_slot_max = fd_ulong_max( memory.pool_slot_max, sizing[w].pool_slot_max );
+    }
+  }
+  FD_TEST( !munmap( sizing, jobs*sizeof(sizing_t) ) );
+  sizing = NULL;
+  if( FD_UNLIKELY( failed ) ) {
+    FD_TEST( !munmap( memory.data, memory.data_max ) );
+    return 0;
   }
 
   memory.pool_sz  = ag_pool_footprint ( memory.pool_slot_max );
@@ -522,6 +569,7 @@ memory_init( char ** paths,
   memory.slot_initialized = memory_new( memory.pool_slot_max, sizeof(uchar) );
   FD_TEST( fd_ulong_is_aligned( (ulong)memory.pool,  ag_pool_align()  ) );
   FD_TEST( fd_ulong_is_aligned( (ulong)memory.votor, ag_votor_align() ) );
+  return 1;
 }
 
 static void
@@ -803,19 +851,77 @@ worker( char ** paths,
         ulong   first,
         ulong   stride,
         ulong * current ) {
-  atexit( backtrace_on_exit );
-  fd_log_level_logfile_set( 4 ); /* ERR and up, the votor warns a lot */
-  fd_log_level_stderr_set ( 4 );
   for( ulong i=first; i<path_cnt; i+=stride ) {
     *current = i;
     scenario_t s;
     scenario_load( &s, paths[i] );
     scenario_run( &s );
   }
-  _exit( 0 );
 }
 
-/* Forks --jobs workers over the inputs and prints the first failing input. */
+/* Forks workers for either phase, reaping all children before returning. */
+
+static int
+workers_run( char **     paths,
+             ulong       path_cnt,
+             ulong       jobs,
+             worker_fn_t worker_fn ) {
+  FD_TEST( jobs<=ULONG_MAX/sizeof(ulong) );
+  ulong * current = mmap( NULL, jobs*sizeof(ulong), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0 );
+  pid_t * pids    = memory_new( jobs, sizeof(pid_t) );
+  FD_TEST( current!=MAP_FAILED );
+  ulong started = 0UL;
+  int failed = 0;
+  for( ; started<jobs; started++ ) {
+    pids[started] = fork();
+    if( FD_UNLIKELY( pids[started]<0 ) ) {
+      FD_LOG_WARNING(( "fork failed (%i-%s)", errno, strerror( errno ) ));
+      failed = 1;
+      break;
+    }
+    if( !pids[started] ) {
+      atexit( backtrace_on_exit );
+      fd_log_level_logfile_set( 4 ); /* ERR and up, the votor warns a lot */
+      fd_log_level_stderr_set ( 4 );
+      worker_fn( paths, path_cnt, started, jobs, &current[started] );
+      _exit( 0 );
+    }
+  }
+
+  ulong failed_input = ULONG_MAX;
+  for( ulong left=started; (!!left) & (!failed); left-- ) {
+    int status;
+    pid_t pid;
+    do { pid = wait( &status ); } while( pid<0 && errno==EINTR );
+    FD_TEST( pid>0 );
+    failed = !WIFEXITED( status ) || WEXITSTATUS( status );
+    for( ulong w=0UL; w<started; w++ ) {
+      if( pids[w]!=pid ) continue;
+      pids[w] = 0; /* already reaped */
+      if( FD_UNLIKELY( failed ) ) failed_input = current[w];
+      break;
+    }
+  }
+  if( FD_UNLIKELY( failed ) ) {
+    for( ulong w=0UL; w<started; w++ ) if( pids[w]>0 ) kill( pids[w], SIGKILL );
+    for( ulong w=0UL; w<started; w++ ) {
+      if( pids[w]<=0 ) continue;
+      pid_t pid;
+      do { pid = waitpid( pids[w], NULL, 0 ); } while( pid<0 && errno==EINTR );
+      FD_TEST( pid==pids[w] );
+    }
+  }
+  FD_TEST( !munmap( pids, jobs*sizeof(pid_t) ) );
+  FD_TEST( !munmap( current, jobs*sizeof(ulong) ) );
+  if( FD_UNLIKELY( failed_input!=ULONG_MAX ) ) {
+    ulong size;
+    uchar * data = file_read( paths[failed_input], &size );
+    fprintf( stderr, "\nfailing input: %s\n%.*s\n", paths[failed_input], (int)size, (char const *)data );
+  }
+  return failed;
+}
+
+/* Size the corpus, allocate storage, then run scenarios. */
 
 int
 main( int     argc,
@@ -845,34 +951,14 @@ main( int     argc,
   jobs = fd_ulong_max( fd_ulong_min( jobs, g.gl_pathc ), 1UL );
 
   cluster_init();
-  memory_init( g.gl_pathv, g.gl_pathc );
-
-  ulong * current = mmap( NULL, jobs*sizeof(ulong), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0 );
-  pid_t * pids    = memory_new( jobs, sizeof(pid_t) );
-  FD_TEST( (current!=MAP_FAILED) & (!!pids) );
-  for( ulong w=0UL; w<jobs; w++ ) {
-    pids[w] = fork();
-    FD_TEST( pids[w]>=0 );
-    if( !pids[w] ) worker( g.gl_pathv, g.gl_pathc, w, jobs, &current[w] );
+  if( FD_UNLIKELY( !memory_init( g.gl_pathv, g.gl_pathc, jobs ) ) ) {
+    globfree( &g );
+    fd_halt();
+    return 1;
   }
 
-  int failed = 0;
-  for( ulong left=jobs; (!!left) & (!failed); left-- ) {
-    int   status;
-    pid_t pid = wait( &status );
-    FD_TEST( pid>0 );
-    failed = !WIFEXITED( status ) || WEXITSTATUS( status );
-    for( ulong w=0UL; (!!failed) & (w<jobs); w++ ) {
-      if( pids[w]!=pid ) { kill( pids[w], SIGKILL ); continue; }
-      ulong   size;
-      uchar * data = file_read( g.gl_pathv[ current[w] ], &size );
-      fprintf( stderr, "\nfailing input: %s\n%.*s\n", g.gl_pathv[ current[w] ], (int)size, (char const *)data );
-    }
-  }
-
+  int failed = workers_run( g.gl_pathv, g.gl_pathc, jobs, worker );
   if( FD_LIKELY( !failed ) ) FD_LOG_NOTICE(( "pass: %lu scenarios", g.gl_pathc ));
-  FD_TEST( !munmap( pids, jobs*sizeof(pid_t) ) );
-  FD_TEST( !munmap( current, jobs*sizeof(ulong) ) );
   memory_fini();
   globfree( &g );
   fd_halt();
