@@ -190,7 +190,8 @@ ag_votor_new( void * mem,
     FD_LOG_WARNING(( "bad slot_max (%lu)", slot_max ));
     return NULL;
   }
-  fd_memset( mem, 0, footprint );
+  /* Sub-constructors initialize their metadata.  state_mut initializes
+     acquired slots; queue and scratch payloads are written before use. */
 
   ulong events_max           = slot_max*( AG_NOTAR_FALLBACK_CERT_MAX + 1UL /* notar */ + 1UL /* skip */ );
   ulong slot_state_chain_cnt = slot_state_map_chain_cnt_est( slot_max );

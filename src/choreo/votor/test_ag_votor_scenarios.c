@@ -1,3 +1,5 @@
+// TODO I care more about what the test can catch and what it can't. 
+  // 
 /* test_ag_votor_scenarios drives a votor wired to a pool, as the votor
    tile does, through scenarios and checks its invariants.
 
@@ -21,10 +23,15 @@
    suite: its worker logs the backtrace, then the suite prints the
    failing input and exits nonzero.
 
+   Inputs are scanned once before fork to size reusable storage for
+   every worker.  Keep the corpus unchanged during a run; workers
+   read each input again and reuse their preallocated buffers.
+
    Every validator signs with one fake signature.  This test's pool
    checks certificate stake thresholds but skips signature verification. */
 
 #include <execinfo.h>
+#include <fcntl.h>
 #include <glob.h>
 #include <signal.h>
 #include <stdio.h>
@@ -49,6 +56,7 @@ test_cert_verify( ag_cert_t const *       cert,
 #include "ag_votor.h"
 #include "test_ag_cert_builder.h"
 #include "../../ballet/json/fd_jtok.h"
+#include "../../util/io/fd_io.h"
 #include "../../util/log/fd_backtrace.h"
 
 #define VALIDATOR_CNT          (20UL)
@@ -114,6 +122,25 @@ typedef struct {
   ulong      final_cert_slot; /* highest final cert slot the votor saw */
 } scenario_t;
 
+/* Sized once from the corpus before fork.  Each worker inherits private
+   storage and reuses it for every scenario. */
+
+static struct {
+  uchar *    data;
+  ulong      data_max;
+  action_t * actions;
+  ulong      action_max;
+  node_t *   nodes;
+  ulong      node_max;
+  slot_t *   slots;
+  ulong      vote_slot_max;
+  void *     pool;
+  ulong      pool_sz;
+  void *     votor;
+  ulong      votor_sz;
+  ulong      pool_slot_max;
+} memory;
+
 static ag_epoch_info_t epoch_info;
 static fd_bls_sig_t    fake_sig;
 static ag_cert_t       templates[ CERT_CNT ];
@@ -155,8 +182,21 @@ cert( uint    kind,
   return c;
 }
 
-/* Keys and stakes the cluster, and builds one template per cert kind. */
+/* Initializes the global fixtures shared by all scenarios, before workers fork:
 
+   epoch_info: deterministic public keys, validator IDs and fixed stakes for
+   the test cluster, including its total stake.
+
+   fake_sig: validator 0's signature over "votor", reused for every vote
+   regardless of signer or message.  The test skips signature verification
+   while retaining certificate stake threshold checks.
+
+   templates: one certificate per kind, with fixed signer sets, stakes,
+   shred version and aggregate signatures.  Template signers exclude
+   validator 0, the votor under test.  Since every vote uses fake_sig,
+   aggregates depend only on the signer sets and can be built once.
+   cert() copies these templates and changes the slot and block hash
+   for each scenario action. */
 static void
 cluster_init( void ) {
   ag_validator_info_t info[ VALIDATOR_CNT ];
@@ -166,13 +206,13 @@ cluster_init( void ) {
     fd_bls_sec_t sk;
     fd_bls_sec_derive( &sk, ikm, sizeof(ikm) );
     info[i].id    = i;
-    info[i].stake = i<10UL ? 620000UL : 380000UL;
+    info[i].stake = i<10UL ? 620000UL : 380000UL; // TODO why these stakes should have a comment
     fd_bls_sec_to_pub( &sk, &info[i].bls_key );
     if( !i ) sec_sign_fn( &sk, &fake_sig, (uchar const *)"votor", 5UL );
   }
   epoch_info_build( &epoch_info, info, VALIDATOR_CNT );
 
-  /* Validator 0 is the votor under test and never signs */
+  /* Template certificates exclude validator 0, the votor under test. */
   ulong                    slot = 1UL;
   ag_block_id_t            id   = block_id( (label_t){ .slot = slot } );
   ag_vote_final_t          final   [ QUORUM_SIGNERS ];
@@ -239,24 +279,25 @@ node_of_block( scenario_t const * s,
   return node_find( s, (label_t){ .slot = slot, .index = FD_LOAD( ulong, hash+8UL ) } );
 }
 
-/* Parses the JSON action list, failing on any malformed action. */
+/* Parses the JSON action list, failing on any malformed action.  With
+   s->actions==NULL, only measures the storage needed for the scenario. */
 
 static void
 actions_parse( scenario_t * s,
                uchar const * data,
                ulong         size ) {
-  ulong action_max = 0UL;
   fd_jtok_t     j[1];
   fd_jtok_str_t key;
   fd_jtok_init( j, data, size );
   fd_jtok_arr_enter( j );
   while( fd_jtok_arr_next( j ) ) {
-    if( FD_UNLIKELY( s->action_cnt==action_max ) ) {
-      action_max = fd_ulong_max( 64UL, 2UL*action_max );
-      s->actions = realloc( s->actions, action_max*sizeof(action_t) );
-      FD_TEST( s->actions );
+    action_t   measured;
+    action_t * a = &measured;
+    if( s->actions ) {
+      if( FD_UNLIKELY( s->action_cnt>=memory.action_max ) ) FD_LOG_ERR(( "scenario exceeds preallocated action capacity" ));
+      a = &s->actions[ s->action_cnt ];
     }
-    action_t * a          = &s->actions[ s->action_cnt++ ];
+    s->action_cnt++;
     int        has_node   = 0;
     int        has_parent = 0;
     *a = (action_t){ .kind = UINT_MAX, .ms = ULONG_MAX };
@@ -275,21 +316,26 @@ actions_parse( scenario_t * s,
     int ok = a->kind==CLOCK ? (!has_node) & (a->ms!=ULONG_MAX)
                             : (a->kind!=UINT_MAX) & has_node & has_parent & (!!a->label.slot) & (a->parent.slot<a->label.slot);
     if( FD_UNLIKELY( !ok ) ) FD_LOG_ERR(( "bad action %lu", s->action_cnt-1UL ));
+    if( a->kind!=CLOCK ) {
+      FD_TEST( (a->label.slot<ULONG_MAX) & (a->label.index<ULONG_MAX) );
+      s->slot_cnt = fd_ulong_max( s->slot_cnt, a->label.slot +1UL );
+      s->width    = fd_ulong_max( s->width,    a->label.index+1UL );
+    }
   }
   if( FD_UNLIKELY( fd_jtok_fini( j ) ) ) FD_LOG_ERR(( "malformed JSON" ));
+
+  /* A cert at a window's end readies the next window, so votes can reach
+     the end of that window. */
+  FD_TEST( s->slot_cnt<=ULONG_MAX-2UL*AG_SLOTS_PER_WINDOW );
+  s->vote_slot_cnt = ( (s->slot_cnt-1UL)/AG_SLOTS_PER_WINDOW+2UL )*AG_SLOTS_PER_WINDOW;
 }
 
 /* Lays nodes out by slot then index, merging what each node's actions say. */
 
 static void
 nodes_build( scenario_t * s ) {
-  for( ulong i=0UL; i<s->action_cnt; i++ ) {
-    if( s->actions[i].kind==CLOCK ) continue;
-    s->slot_cnt = fd_ulong_max( s->slot_cnt, s->actions[i].label.slot +1UL );
-    s->width    = fd_ulong_max( s->width,    s->actions[i].label.index+1UL );
-  }
-  s->nodes = calloc( s->slot_cnt*s->width, sizeof(node_t) );
-  FD_TEST( s->nodes );
+  if( FD_UNLIKELY( s->slot_cnt>memory.node_max/s->width ) ) FD_LOG_ERR(( "scenario exceeds preallocated node capacity" ));
+  memset( s->nodes, 0, s->slot_cnt*s->width*sizeof(node_t) );
   for( ulong i=0UL; i<s->action_cnt; i++ ) {
     action_t const * a = &s->actions[i];
     if( a->kind==CLOCK ) continue;
@@ -329,19 +375,85 @@ canonical_build( scenario_t * s ) {
 static uchar *
 file_read( char const * path,
            ulong *      size ) {
-  FILE * f = fopen( path, "rb" );
-  if( FD_UNLIKELY( !f ) ) FD_LOG_ERR(( "fopen(%s) failed", path ));
+  int fd = open( path, O_RDONLY );
+  if( FD_UNLIKELY( fd<0 ) ) FD_LOG_ERR(( "open(%s) failed", path ));
   struct stat st;
-  FD_TEST( !fstat( fileno( f ), &st ) );
+  FD_TEST( !fstat( fd, &st ) );
   if( FD_UNLIKELY( !S_ISREG( st.st_mode ) ) ) FD_LOG_ERR(( "%s is not a regular file", path ));
-  FD_TEST( !fseek( f, 0L, SEEK_END ) );
-  long sz = ftell( f );
-  FD_TEST( sz>=0L && !fseek( f, 0L, SEEK_SET ) );
-  uchar * data = malloc( (ulong)sz+1UL );
-  FD_TEST( data && fread( data, 1UL, (ulong)sz, f )==(ulong)sz );
-  fclose( f );
-  *size = (ulong)sz;
-  return data;
+  FD_TEST( st.st_size>=0L );
+  *size = (ulong)st.st_size;
+  if( FD_UNLIKELY( *size>memory.data_max ) ) FD_LOG_ERR(( "%s exceeds preallocated input capacity", path ));
+  ulong read_sz;
+  FD_TEST( !fd_io_read( fd, memory.data, *size, *size, &read_sz ) );
+  FD_TEST( read_sz==*size );
+  FD_TEST( !close( fd ) );
+  return memory.data;
+}
+
+static void *
+memory_new( ulong cnt,
+            ulong ele_sz ) {
+  FD_TEST( ele_sz && cnt<=ULONG_MAX/ele_sz );
+  ulong sz = fd_ulong_max( cnt*ele_sz, 1UL );
+  void * p = mmap( NULL, sz, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0 );
+  FD_TEST( p!=MAP_FAILED );
+  return p;
+}
+
+/* Read inputs once to size every buffer.  The node count used to reserve
+   pool/votor storage is an upper bound; scenario_run still initializes
+   them with each scenario's actual capacity.  Mappings are demand-paged,
+   so workers only touch the portions used by their scenarios. */
+
+static void
+memory_init( char ** paths,
+             ulong   path_cnt ) {
+  memory.data_max = 1UL;
+  for( ulong i=0UL; i<path_cnt; i++ ) {
+    struct stat st;
+    if( FD_UNLIKELY( stat( paths[i], &st ) ) ) FD_LOG_ERR(( "stat(%s) failed", paths[i] ));
+    if( FD_UNLIKELY( !S_ISREG( st.st_mode ) ) ) FD_LOG_ERR(( "%s is not a regular file", paths[i] ));
+    FD_TEST( st.st_size>=0L );
+    memory.data_max = fd_ulong_max( memory.data_max, (ulong)st.st_size );
+  }
+  memory.data = memory_new( memory.data_max, 1UL );
+
+  for( ulong i=0UL; i<path_cnt; i++ ) {
+    ulong size;
+    uchar * data = file_read( paths[i], &size );
+    scenario_t s = { .slot_cnt = 1UL, .width = 1UL };
+    actions_parse( &s, data, size );
+    FD_TEST( s.slot_cnt<=ULONG_MAX/s.width );
+    ulong node_max = s.slot_cnt*s.width;
+    ulong node_cnt = fd_ulong_min( s.action_cnt, node_max );
+    FD_TEST( (s.vote_slot_cnt<=ULONG_MAX-AG_REWARD_SLOT_DELTA) & (node_cnt<=ULONG_MAX-2UL) );
+    ulong pool_slot_max = fd_ulong_max( s.vote_slot_cnt+AG_REWARD_SLOT_DELTA, node_cnt+2UL );
+    memory.action_max    = fd_ulong_max( memory.action_max,    s.action_cnt    );
+    memory.node_max      = fd_ulong_max( memory.node_max,      node_max        );
+    memory.vote_slot_max = fd_ulong_max( memory.vote_slot_max, s.vote_slot_cnt );
+    memory.pool_slot_max = fd_ulong_max( memory.pool_slot_max, pool_slot_max   );
+  }
+
+  memory.pool_sz  = ag_pool_footprint ( memory.pool_slot_max );
+  memory.votor_sz = ag_votor_footprint( memory.pool_slot_max );
+  FD_TEST( (!!memory.pool_sz) & (!!memory.votor_sz) );
+  memory.actions = memory_new( memory.action_max,    sizeof(action_t) );
+  memory.nodes   = memory_new( memory.node_max,      sizeof(node_t)   );
+  memory.slots   = memory_new( memory.vote_slot_max, sizeof(slot_t)   );
+  memory.pool    = memory_new( memory.pool_sz,       1UL );
+  memory.votor   = memory_new( memory.votor_sz,      1UL );
+  FD_TEST( fd_ulong_is_aligned( (ulong)memory.pool,  ag_pool_align()  ) );
+  FD_TEST( fd_ulong_is_aligned( (ulong)memory.votor, ag_votor_align() ) );
+}
+
+static void
+memory_fini( void ) {
+  FD_TEST( !munmap( memory.votor,   memory.votor_sz ) );
+  FD_TEST( !munmap( memory.pool,    memory.pool_sz  ) );
+  FD_TEST( !munmap( memory.slots,   memory.vote_slot_max*sizeof(slot_t) ) );
+  FD_TEST( !munmap( memory.nodes,   memory.node_max*sizeof(node_t) ) );
+  FD_TEST( !munmap( memory.actions, fd_ulong_max( memory.action_max*sizeof(action_t), 1UL ) ) );
+  FD_TEST( !munmap( memory.data,    memory.data_max ) );
 }
 
 /* Parses a scenario and derives its nodes, canonical chain and vote bounds. */
@@ -352,26 +464,18 @@ scenario_load( scenario_t * s,
   ulong   size;
   uchar * data = file_read( path, &size );
   memset( s, 0, sizeof(scenario_t) );
+  s->actions  = memory.actions;
+  s->nodes    = memory.nodes;
+  s->slots    = memory.slots;
   s->slot_cnt = 1UL;
   s->width    = 1UL;
   actions_parse( s, data, size );
-  free( data );
   nodes_build( s );
 
-  /* A cert in the deepest slot, at a window's end, readies the next
-     window, so votes reach the end of that window. */
-  s->vote_slot_cnt = ( (s->slot_cnt-1UL)/AG_SLOTS_PER_WINDOW+2UL )*AG_SLOTS_PER_WINDOW;
-  s->slots         = calloc( s->vote_slot_cnt, sizeof(slot_t) );
-  FD_TEST( s->slots );
+  if( FD_UNLIKELY( s->vote_slot_cnt>memory.vote_slot_max ) ) FD_LOG_ERR(( "scenario exceeds preallocated slot capacity" ));
+  memset( s->slots, 0, s->vote_slot_cnt*sizeof(slot_t) );
   s->slots[ 0 ].voted_notar = 1; /* the root, as ag_votor_init */
   canonical_build( s );
-}
-
-static void
-scenario_free( scenario_t * s ) {
-  free( s->actions );
-  free( s->nodes );
-  free( s->slots );
 }
 
 /* Invariants */
@@ -549,13 +653,6 @@ pump( scenario_t * s,
   check_canonical( s, pool );
 }
 
-/* Mapping fresh pool and votor memory for every scenario dominates the
-   run time, so a worker reuses its largest. */
-
-static void * pool_mem;
-static void * votor_mem;
-static ulong  mem_slot_max;
-
 /* Runs the actions against a fresh pool and votor, then checks the finalized slot. */
 
 static void
@@ -563,17 +660,10 @@ scenario_run( scenario_t * s ) {
   /* The pool holds slots up to slot_max-AG_REWARD_SLOT_DELTA past the
      root, and its event queues hold slot_max events. */
   ulong slot_max = fd_ulong_max( s->vote_slot_cnt+AG_REWARD_SLOT_DELTA, s->node_cnt+2UL );
-  if( FD_UNLIKELY( slot_max>mem_slot_max ) ) {
-    free( pool_mem  );
-    free( votor_mem );
-    pool_mem     = aligned_alloc( ag_pool_align(),  fd_ulong_align_up( ag_pool_footprint ( slot_max ), ag_pool_align()  ) );
-    votor_mem    = aligned_alloc( ag_votor_align(), fd_ulong_align_up( ag_votor_footprint( slot_max ), ag_votor_align() ) );
-    mem_slot_max = slot_max;
-    FD_TEST( (!!pool_mem) & (!!votor_mem) );
-  }
+  FD_TEST( slot_max<=memory.pool_slot_max );
 
-  ag_pool_t *  pool  = ag_pool_join ( ag_pool_new ( pool_mem,  slot_max, 42UL ) );
-  ag_votor_t * votor = ag_votor_join( ag_votor_new( votor_mem, slot_max, 42UL ) );
+  ag_pool_t *  pool  = ag_pool_join ( ag_pool_new ( memory.pool,  slot_max, 42UL ) );
+  ag_votor_t * votor = ag_votor_join( ag_votor_new( memory.votor, slot_max, 42UL ) );
   FD_TEST( (!!pool) & (!!votor) );
   ag_pool_init          ( pool, 0UL );
   ag_pool_advance_epoch ( pool, &epoch_info, 0UL, 0UL );
@@ -663,7 +753,6 @@ worker( char ** paths,
     scenario_t s;
     scenario_load( &s, paths[i] );
     scenario_run( &s );
-    scenario_free( &s );
   }
   _exit( 0 );
 }
@@ -676,7 +765,7 @@ main( int     argc,
   fd_boot( &argc, &argv );
   ulong jobs = fd_env_strip_cmdline_ulong( &argc, &argv, "--jobs", NULL, (ulong)sysconf( _SC_NPROCESSORS_ONLN ) );
 
-  /* The unit-test runner supplies workspace options; this test uses malloc. */
+  /* The unit-test runner supplies workspace options; this test maps its own storage. */
   fd_env_strip_cmdline_cstr( &argc, &argv, "--page-sz",  NULL, NULL );
   fd_env_strip_cmdline_cstr( &argc, &argv, "--page-cnt", NULL, NULL );
   fd_env_strip_cmdline_cstr( &argc, &argv, "--numa-idx", NULL, NULL );
@@ -698,9 +787,10 @@ main( int     argc,
   jobs = fd_ulong_max( fd_ulong_min( jobs, g.gl_pathc ), 1UL );
 
   cluster_init();
+  memory_init( g.gl_pathv, g.gl_pathc );
 
   ulong * current = mmap( NULL, jobs*sizeof(ulong), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0 );
-  pid_t * pids    = malloc( jobs*sizeof(pid_t) );
+  pid_t * pids    = memory_new( jobs, sizeof(pid_t) );
   FD_TEST( (current!=MAP_FAILED) & (!!pids) );
   for( ulong w=0UL; w<jobs; w++ ) {
     pids[w] = fork();
@@ -719,12 +809,13 @@ main( int     argc,
       ulong   size;
       uchar * data = file_read( g.gl_pathv[ current[w] ], &size );
       fprintf( stderr, "\nfailing input: %s\n%.*s\n", g.gl_pathv[ current[w] ], (int)size, (char const *)data );
-      free( data );
     }
   }
 
   if( FD_LIKELY( !failed ) ) FD_LOG_NOTICE(( "pass: %lu scenarios", g.gl_pathc ));
-  free( pids );
+  FD_TEST( !munmap( pids, jobs*sizeof(pid_t) ) );
+  FD_TEST( !munmap( current, jobs*sizeof(ulong) ) );
+  memory_fini();
   globfree( &g );
   fd_halt();
   return failed;

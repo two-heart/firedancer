@@ -166,7 +166,9 @@ ag_pool_new( void * mem,
     FD_LOG_WARNING(( "bad slot_max (%lu)", slot_max ));
     return NULL;
   }
-  fd_memset( mem, 0, footprint );
+  /* Initialize metadata below and slot state on acquisition.  Queue and
+     scratch payloads are written before use; clearing the entire backing
+     allocation would also touch every unused slot's large vote arrays. */
 
   ulong s2n_max        = slot_max*AG_EQVOC_BLOCK_HASH_MAX;
   ulong cert_max       = slot_max*( AG_NOTAR_FALLBACK_CERT_MAX + 1UL /* notar */ + 1UL /* skip */ );
@@ -310,9 +312,11 @@ slot_state( ag_pool_t * self,
   ele       = slot_state_pool_ele_acquire( self->slot_states->pool );
   ele->slot = slot;
   ag_slot_state_null( &ele->slot_state );
-  ele->slot_state.slot       = slot;
-  ele->slot_state.epoch_info = info;
-  ele->slot_state.own_rank   = rank;
+  /* Standstill recovery can inspect a slot before its first vote. */
+  ele->slot_state.slot          = slot;
+  ele->slot_state.shred_version = 0;
+  ele->slot_state.epoch_info    = info;
+  ele->slot_state.own_rank      = rank;
   slot_state_map_ele_insert( self->slot_states->map, ele, self->slot_states->pool );
   return &ele->slot_state;
 }

@@ -191,6 +191,8 @@ setup_pool( void ) {
   create_validators();
   ulong slot_max = TEST_SLOT_MAX;
   FD_TEST( ag_pool_footprint( slot_max )<=sizeof(scratch) );
+  /* Constructors must work with dirty backing memory, including on reuse. */
+  fd_memset( scratch, 0xa5, ag_pool_footprint( slot_max ) );
   ag_pool_t * pool = ag_pool_join( ag_pool_new( scratch, slot_max, 42UL ) );
   FD_TEST( pool );
   ag_pool_init( pool, 0UL );

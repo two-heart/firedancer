@@ -121,6 +121,8 @@ static ag_votor_t *
 setup_votor( long now ) {
   create_validators();
   FD_TEST( ag_votor_footprint( TEST_SLOT_MAX )<=sizeof(scratch) );
+  /* Constructors must work with dirty backing memory, including on reuse. */
+  fd_memset( scratch, 0xa5, ag_votor_footprint( TEST_SLOT_MAX ) );
   ag_votor_t * votor = ag_votor_join( ag_votor_new( scratch, TEST_SLOT_MAX, 42UL ) );
   FD_TEST( votor );
   ag_votor_init         ( votor, 0UL, now, TEST_NS_PER_SLOT, TEST_SHRED_VERSION, sec_sign_fn, &g_sk[0] );
